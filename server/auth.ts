@@ -1,16 +1,38 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { NextFunction, Request, Response } from 'express';
-import { db } from './db.ts';
+import { db, dbDir } from './db.ts';
 import type { UserProfile, UserRole } from '../src/types/index.ts';
 
 const SESSION_COOKIE_NAME = 'exampilot_session';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const FALLBACK_SECRET = crypto.randomBytes(32).toString('hex');
+let cachedFallbackSecret: string | null = null;
 
 function getSessionSecret(): string {
-  return process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16
-    ? process.env.SESSION_SECRET.trim()
-    : FALLBACK_SECRET;
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16) {
+    return process.env.SESSION_SECRET.trim();
+  }
+  if (cachedFallbackSecret) {
+    return cachedFallbackSecret;
+  }
+  const secretPath = path.join(dbDir, '.session_secret');
+  try {
+    if (fs.existsSync(secretPath)) {
+      const stored = fs.readFileSync(secretPath, 'utf8').trim();
+      if (stored.length >= 32) {
+        cachedFallbackSecret = stored;
+        return stored;
+      }
+    }
+    const generated = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(secretPath, generated, { mode: 0o600 });
+    cachedFallbackSecret = generated;
+    return generated;
+  } catch {
+    cachedFallbackSecret = crypto.randomBytes(32).toString('hex');
+    return cachedFallbackSecret;
+  }
 }
 
 function hashToken(rawToken: string): string {

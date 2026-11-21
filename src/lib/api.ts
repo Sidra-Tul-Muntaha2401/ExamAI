@@ -1,8 +1,32 @@
+const TOKEN_STORAGE_KEY = 'examai_session_token';
+
+function readStoredToken(): string | null {
+  try {
+    return typeof window !== 'undefined' ? window.sessionStorage.getItem(TOKEN_STORAGE_KEY) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredToken(token: string | null): void {
+  try {
+    if (typeof window === 'undefined') return;
+    if (token) {
+      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+}
+
 class ApiClient {
-  private token: string | null = null;
+  private token: string | null = readStoredToken();
 
   setToken(token: string | null): void {
     this.token = token;
+    writeStoredToken(token);
   }
 
   getToken(): string | null {
@@ -31,6 +55,9 @@ class ApiClient {
     const data = contentType.includes('application/json') ? await res.json() : await res.text();
 
     if (!res.ok) {
+      if (res.status === 401 && path !== '/api/auth/login' && path !== '/api/auth/register') {
+        this.setToken(null);
+      }
       const errorMsg =
         typeof data === 'object' && data && 'error' in data
           ? String((data as { error: unknown }).error)

@@ -1,10 +1,24 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
-const dbPath = path.resolve(process.cwd(), process.env.DATABASE_PATH || './data/exampilot.sqlite');
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+function resolveWritableDbPath(): string {
+  const configured = path.resolve(process.cwd(), process.env.DATABASE_PATH || './data/exampilot.sqlite');
+  try {
+    fs.mkdirSync(path.dirname(configured), { recursive: true });
+    fs.accessSync(path.dirname(configured), fs.constants.W_OK);
+    return configured;
+  } catch {
+    const fallbackDir = path.join(os.tmpdir(), 'examai-data');
+    fs.mkdirSync(fallbackDir, { recursive: true });
+    return path.join(fallbackDir, 'exampilot.sqlite');
+  }
+}
+
+const dbPath = resolveWritableDbPath();
+export const dbDir = path.dirname(dbPath);
 
 export const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON;');

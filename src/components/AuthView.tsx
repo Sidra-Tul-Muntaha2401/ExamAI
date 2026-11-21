@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertCircle, ArrowLeft, BookOpen, GraduationCap, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { UserRole } from '../types/index';
@@ -12,6 +12,11 @@ interface AuthViewProps {
 export function AuthView({ initialMode, onNavigate }: AuthViewProps) {
   const { login, register } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
+
+  useEffect(() => {
+    setMode(initialMode);
+    setError(null);
+  }, [initialMode]);
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');

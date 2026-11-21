@@ -9,23 +9,30 @@ import { ResultView } from './components/ResultView';
 import { StudentDashboard } from './components/StudentDashboard';
 import { TeacherDashboard } from './components/TeacherDashboard';
 
+function normalizePath(raw: string): string {
+  if (!raw || raw === '/') return '/';
+  const trimmed = raw.replace(/\/+$/, '');
+  return trimmed || '/';
+}
+
 function AppRouter() {
   const { user, loading } = useAuth();
-  const [pathname, setPathname] = useState<string>(() => window.location.pathname || '/');
+  const [pathname, setPathname] = useState<string>(() => normalizePath(window.location.pathname));
 
   useEffect(() => {
     const onPopState = () => {
-      setPathname(window.location.pathname || '/');
+      setPathname(normalizePath(window.location.pathname));
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   const navigate = useCallback((nextPath: string) => {
-    if (window.location.pathname !== nextPath) {
-      window.history.pushState({}, '', nextPath);
+    const normalized = normalizePath(nextPath);
+    if (normalizePath(window.location.pathname) !== normalized) {
+      window.history.pushState({}, '', normalized);
     }
-    setPathname(nextPath);
+    setPathname(normalized);
     window.scrollTo({ top: 0, behavior: 'auto' });
   }, []);
 

@@ -1912,5 +1912,9 @@ export function createApiRouter(): express.Router {
     }
   );
 
+  router.use((_req: Request, res: Response) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
+  });
+
   return router;
 }
