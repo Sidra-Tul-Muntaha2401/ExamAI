@@ -1,0 +1,6 @@
+{
+  "name": "ExamPilot",
+  "description": "AI-powered examination and study platform for students and teachers with PDF/DOCX question generation, distraction-free timed exams, and rubric evaluation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
