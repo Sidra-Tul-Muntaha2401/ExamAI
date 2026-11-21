@@ -61,7 +61,9 @@ class ApiClient {
       const errorMsg =
         typeof data === 'object' && data && 'error' in data
           ? String((data as { error: unknown }).error)
-          : `Request failed with status ${res.status}`;
+          : res.status === 404 && path.startsWith('/api/')
+            ? 'Backend API route returned 404. Make sure you are using the full-stack server (npm run dev / npm start or live Dev Preview URL) rather than a static-only preview.'
+            : `Request failed with status ${res.status}`;
       throw new Error(errorMsg);
     }
 

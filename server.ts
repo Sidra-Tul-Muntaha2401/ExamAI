@@ -2,7 +2,6 @@ import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import { attachOptionalUser } from './server/auth.ts';
 import { initializeDatabase } from './server/db.ts';
 import { createApiRouter } from './server/routes.ts';
@@ -19,6 +18,7 @@ async function startServer(): Promise<void> {
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
