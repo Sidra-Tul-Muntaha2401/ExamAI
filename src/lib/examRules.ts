@@ -135,10 +135,85 @@ export function seededShuffle<T>(items: readonly T[], seedString: string): T[] {
   return copy;
 }
 
+export function buildSmartContextExcerpt(sourceText: string, maxChars = 15000): string {
+  const normalized = sourceText.replace(/\r\n/g, '\n').trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  const chunkTargetSize = 2400;
+  const paragraphs = normalized.split(/\n{2,}/).filter((p) => p.trim().length > 0);
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const para of paragraphs) {
+    if (para.length > chunkTargetSize) {
+      if (current.trim()) {
+        chunks.push(current.trim());
+        current = '';
+      }
+      for (let i = 0; i < para.length; i += chunkTargetSize) {
+        chunks.push(para.slice(i, i + chunkTargetSize).trim());
+      }
+    } else if (current.length + para.length + 2 > chunkTargetSize) {
+      if (current.trim()) chunks.push(current.trim());
+      current = para;
+    } else {
+      current = current ? `${current}\n\n${para}` : para;
+    }
+  }
+  if (current.trim()) {
+    chunks.push(current.trim());
+  }
+
+  if (chunks.length <= 1) {
+    return normalized.slice(0, maxChars);
+  }
+
+  // Prefer substantive content chunks over short title/TOC fragments
+  const scoredChunks = chunks.map((text, index) => {
+    const words = text.split(/\s+/).filter(Boolean).length;
+    const dotLeaders = (text.match(/\.{4,}/g) || []).length;
+    const score = words - dotLeaders * 12;
+    return { text, index, score };
+  });
+
+  const substantive = scoredChunks.filter((c) => c.score >= 40);
+  const pool = substantive.length >= 2 ? substantive : scoredChunks;
+
+  const maxChunks = Math.max(1, Math.floor(maxChars / chunkTargetSize));
+  const selectedIndices = new Set<number>();
+
+  if (pool.length <= maxChunks) {
+    for (const c of pool) selectedIndices.add(c.index);
+  } else {
+    for (let k = 0; k < maxChunks; k++) {
+      const pos = Math.round((k * (pool.length - 1)) / Math.max(1, maxChunks - 1));
+      selectedIndices.add(pool[pos].index);
+    }
+  }
+
+  const ordered = chunks
+    .filter((_, idx) => selectedIndices.has(idx))
+    .join('\n\n---\n\n');
+
+  return ordered.slice(0, maxChars);
+}
+
 export function stripMarkdownCodeFences(raw: string): string {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return fenced ? fenced[1].trim() : trimmed;
+  if (fenced) return fenced[1].trim();
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
+  }
+  return trimmed;
+}
+
+function stripOptionLabelPrefix(text: string): string {
+  return text.replace(/^[A-Ea-e][).:\]]\s+/, '').trim();
 }
 
 export function parseAndValidateGroqQuestions(
@@ -159,7 +234,9 @@ export function parseAndValidateGroqQuestions(
     ? parsed
     : parsed && typeof parsed === 'object' && Array.isArray((parsed as { questions?: unknown[] }).questions)
       ? (parsed as { questions: unknown[] }).questions
-      : null;
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown[] }).items)
+        ? (parsed as { items: unknown[] }).items
+        : null;
 
   if (!rawList || rawList.length === 0) {
     throw new Error('AI response did not contain a non-empty questions array.');
@@ -172,13 +249,14 @@ export function parseAndValidateGroqQuestions(
       continue;
     }
 
-    const rawType = typeof item.questionType === 'string' ? item.questionType.trim().toLowerCase() : requestedType;
+    const rawTypeVal = item.questionType ?? item.type ?? item.question_type;
+    const rawType = typeof rawTypeVal === 'string' ? rawTypeVal.trim().toLowerCase() : requestedType;
     const normalizedType: QuestionType =
-      rawType === 'mcq' || rawType === 'multiple_choice'
+      rawType === 'mcq' || rawType === 'multiple_choice' || rawType === 'multiple-choice'
         ? 'mcq'
-        : rawType === 'true_false' || rawType === 'true/false'
+        : rawType === 'true_false' || rawType === 'true/false' || rawType === 'boolean'
           ? 'true_false'
-          : rawType === 'long_answer' || rawType === 'long'
+          : rawType === 'long_answer' || rawType === 'long' || rawType === 'essay'
             ? 'long_answer'
             : rawType === 'short_answer' || rawType === 'short'
               ? 'short_answer'
@@ -190,7 +268,9 @@ export function parseAndValidateGroqQuestions(
       ? item.prompt.trim()
       : typeof item.question === 'string'
         ? item.question.trim()
-        : '';
+        : typeof item.statement === 'string'
+          ? item.statement.trim()
+          : '';
 
     if (!prompt || prompt.length < 8) {
       continue;
@@ -203,20 +283,46 @@ export function parseAndValidateGroqQuestions(
         : requestedDifficulty;
 
     if (normalizedType === 'mcq') {
-      const rawOptions = Array.isArray(item.options)
-        ? item.options.map((opt) => String(opt).trim()).filter((opt) => opt.length > 0)
-        : [];
+      let rawOptions: string[] = [];
+      if (Array.isArray(item.options)) {
+        rawOptions = item.options.map((opt) => stripOptionLabelPrefix(String(opt))).filter((opt) => opt.length > 0);
+      } else if (item.options && typeof item.options === 'object') {
+        rawOptions = Object.values(item.options as Record<string, unknown>)
+          .map((opt) => stripOptionLabelPrefix(String(opt)))
+          .filter((opt) => opt.length > 0);
+      } else if (Array.isArray(item.choices)) {
+        rawOptions = item.choices.map((opt) => stripOptionLabelPrefix(String(opt))).filter((opt) => opt.length > 0);
+      }
+
       const uniqueOptions = Array.from(new Set(rawOptions));
-      if (uniqueOptions.length < 4) {
+      if (uniqueOptions.length < 2) {
         continue;
       }
-      const options = uniqueOptions.slice(0, 4);
-      const rawCorrect = typeof item.correctAnswer === 'string' ? item.correctAnswer.trim() : '';
-      const matchedOption =
+      const options = uniqueOptions.slice(0, 5);
+      const rawAnswerVal = item.correctAnswer ?? item.correct_answer ?? item.answer ?? item.correctOption ?? item.correct;
+      const rawCorrect = typeof rawAnswerVal === 'string' || typeof rawAnswerVal === 'number'
+        ? String(rawAnswerVal).trim()
+        : '';
+      const strippedCorrect = stripOptionLabelPrefix(rawCorrect);
+
+      let matchedOption =
         options.find((opt) => opt.toLowerCase() === rawCorrect.toLowerCase()) ||
-        (rawCorrect.length === 1 && ['a', 'b', 'c', 'd'].includes(rawCorrect.toLowerCase())
-          ? options['abcd'.indexOf(rawCorrect.toLowerCase())]
-          : undefined);
+        options.find((opt) => opt.toLowerCase() === strippedCorrect.toLowerCase());
+
+      if (!matchedOption) {
+        const letterMatch = rawCorrect.toLowerCase().replace(/[^a-e]/g, '');
+        if (rawCorrect.length <= 2 && letterMatch.length === 1 && ['a', 'b', 'c', 'd', 'e'].includes(letterMatch)) {
+          matchedOption = options['abcde'.indexOf(letterMatch)];
+        } else if (/^[1-5]$/.test(rawCorrect)) {
+          matchedOption = options[Number(rawCorrect) - 1];
+        } else {
+          matchedOption = options.find(
+            (opt) =>
+              opt.toLowerCase().includes(strippedCorrect.toLowerCase()) ||
+              (strippedCorrect.length > 3 && strippedCorrect.toLowerCase().includes(opt.toLowerCase()))
+          );
+        }
+      }
 
       if (!matchedOption) {
         continue;
@@ -237,7 +343,8 @@ export function parseAndValidateGroqQuestions(
         marks: 2,
       });
     } else if (normalizedType === 'true_false') {
-      const rawCorrect = String(item.correctAnswer ?? '').trim().toLowerCase();
+      const rawVal = item.correctAnswer ?? item.correct_answer ?? item.answer ?? item.correct;
+      const rawCorrect = String(rawVal ?? '').trim().toLowerCase();
       if (rawCorrect !== 'true' && rawCorrect !== 'false') {
         continue;
       }
@@ -256,18 +363,15 @@ export function parseAndValidateGroqQuestions(
         marks: 1,
       });
     } else {
-      const suggestedAnswer =
-        typeof item.suggestedAnswer === 'string' && item.suggestedAnswer.trim()
-          ? item.suggestedAnswer.trim()
-          : typeof item.correctAnswer === 'string' && item.correctAnswer.trim()
-            ? item.correctAnswer.trim()
-            : '';
+      const rawSuggested = item.suggestedAnswer ?? item.suggested_answer ?? item.correctAnswer ?? item.answer ?? item.modelAnswer;
+      const suggestedAnswer = typeof rawSuggested === 'string' && rawSuggested.trim() ? rawSuggested.trim() : '';
       if (!suggestedAnswer) {
         continue;
       }
+      const rawGuidance = item.markingGuidance ?? item.marking_guidance ?? item.rubric;
       const markingGuidance =
-        typeof item.markingGuidance === 'string' && item.markingGuidance.trim()
-          ? item.markingGuidance.trim()
+        typeof rawGuidance === 'string' && rawGuidance.trim()
+          ? rawGuidance.trim()
           : 'Award marks for accurate core concepts, terminology, and supporting explanation from the source material.';
       validated.push({
         id: `q-${i + 1}`,

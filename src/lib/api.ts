@@ -1,41 +1,29 @@
-const TOKEN_STORAGE_KEY = 'examai_session_token';
-
-function readStoredToken(): string | null {
-  try {
-    return typeof window !== 'undefined' ? window.sessionStorage.getItem(TOKEN_STORAGE_KEY) : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredToken(token: string | null): void {
-  try {
-    if (typeof window === 'undefined') return;
-    if (token) {
-      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
-    } else {
-      window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-    }
-  } catch {
-    // Ignore storage errors in restricted contexts
-  }
-}
+import type { UserRole } from '../types/index';
 
 class ApiClient {
-  private token: string | null = readStoredToken();
+  private token: string | null = null;
+  private workspaceMode: UserRole = 'student';
 
   setToken(token: string | null): void {
     this.token = token;
-    writeStoredToken(token);
   }
 
   getToken(): string | null {
     return this.token;
   }
 
+  setWorkspaceMode(mode: UserRole): void {
+    this.workspaceMode = mode;
+  }
+
+  getWorkspaceMode(): UserRole {
+    return this.workspaceMode;
+  }
+
   async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers || {});
-    headers.set('X-Requested-With', 'ExamPilot');
+    headers.set('X-Requested-With', 'ExamAI');
+    headers.set('X-ExamAI-Mode', this.workspaceMode);
 
     if (this.token) {
       headers.set('Authorization', `Bearer ${this.token}`);
@@ -52,7 +40,8 @@ class ApiClient {
     });
 
     const contentType = res.headers.get('content-type') || '';
-    const data = contentType.includes('application/json') ? await res.json() : await res.text();
+    const isJson = contentType.includes('application/json');
+    const data = isJson ? await res.json() : await res.text();
 
     if (!res.ok) {
       if (res.status === 401 && path !== '/api/auth/login' && path !== '/api/auth/register') {
@@ -61,10 +50,18 @@ class ApiClient {
       const errorMsg =
         typeof data === 'object' && data && 'error' in data
           ? String((data as { error: unknown }).error)
-          : res.status === 404 && path.startsWith('/api/')
-            ? 'Backend API route returned 404. Make sure you are using the full-stack server (npm run dev / npm start or live Dev Preview URL) rather than a static-only preview.'
-            : `Request failed with status ${res.status}`;
+          : res.status === 413
+            ? 'Uploaded file is too large for the serverless request limit (max ~4.5 MB on Vercel).'
+            : res.status === 404 && path.startsWith('/api/')
+              ? 'Backend API route returned 404. Verify api/index.ts and vercel.json rewrites are deployed, or run the full-stack server.'
+              : `Request failed with status ${res.status}`;
       throw new Error(errorMsg);
+    }
+
+    if (path.startsWith('/api/') && (!isJson || data === null || typeof data !== 'object')) {
+      throw new Error(
+        'Backend API returned a non-JSON response. Verify the serverless /api endpoint is deployed rather than static-only hosting.'
+      );
     }
 
     return data as T;

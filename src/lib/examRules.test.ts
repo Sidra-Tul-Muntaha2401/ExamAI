@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildSmartContextExcerpt,
   computeFinalResult,
   getRemainingSeconds,
   gradeObjectiveQuestions,
@@ -43,6 +44,17 @@ test('validateExtractedText flags scanned/empty PDFs honestly', () => {
   assert.equal(valid.wordCount > 10, true);
 });
 
+test('buildSmartContextExcerpt samples substantive sections across long documents', () => {
+  const intro = 'Table of Contents ........ 1\nChapter 1 ........ 3';
+  const sec1 = 'Section One: ' + 'Mitochondrial electron transport generates proton motive force. '.repeat(35);
+  const sec2 = 'Section Two: ' + 'Glycolysis converts six carbon glucose into two pyruvate molecules. '.repeat(35);
+  const sec3 = 'Section Three: ' + 'Citric acid cycle yields NADH and FADH2 in the matrix. '.repeat(35);
+  const full = [intro, sec1, sec2, sec3].join('\n\n');
+  const excerpt = buildSmartContextExcerpt(full, 4000);
+  assert.equal(excerpt.length <= 4000, true);
+  assert.equal(excerpt.includes('Section One') || excerpt.includes('Section Three'), true);
+});
+
 test('seededShuffle is deterministic for the same seed and preserves all elements', () => {
   const input = ['A', 'B', 'C', 'D', 'E'];
   const first = seededShuffle(input, 'attempt-123');
@@ -52,7 +64,7 @@ test('seededShuffle is deterministic for the same seed and preserves all element
   assert.deepEqual(input, ['A', 'B', 'C', 'D', 'E']);
 });
 
-test('parseAndValidateGroqQuestions validates MCQ and descriptive JSON structures', () => {
+test('parseAndValidateGroqQuestions validates MCQ and descriptive JSON structures including LLM variants', () => {
   const raw = JSON.stringify({
     questions: [
       {
@@ -62,6 +74,18 @@ test('parseAndValidateGroqQuestions validates MCQ and descriptive JSON structure
         options: ['1NF', '2NF', '3NF', 'BCNF'],
         correctAnswer: '2NF',
         explanation: 'Second Normal Form requires full functional dependency on the entire primary key.',
+      },
+      {
+        type: 'mcq',
+        difficulty: 'Easy',
+        question: 'Which normal form removes repeating groups?',
+        options: { A: 'A. First Normal Form', B: 'B. Second Normal Form', C: 'C. Third Normal Form', D: 'D. BCNF' },
+        answer: 'A',
+      },
+      {
+        questionType: 'true_false',
+        prompt: 'Foreign keys enforce referential integrity.',
+        correct_answer: true,
       },
       {
         questionType: 'short_answer',
@@ -74,11 +98,13 @@ test('parseAndValidateGroqQuestions validates MCQ and descriptive JSON structure
   });
 
   const parsed = parseAndValidateGroqQuestions(raw, 'mixed', 'Medium', 'Normalization');
-  assert.equal(parsed.length, 2);
+  assert.equal(parsed.length, 4);
   assert.equal(parsed[0].questionType, 'mcq');
   assert.equal(parsed[0].correctAnswer, '2NF');
-  assert.equal(parsed[1].questionType, 'short_answer');
-  assert.equal(parsed[1].marks, 5);
+  assert.equal(parsed[1].correctAnswer, 'First Normal Form');
+  assert.equal(parsed[2].correctAnswer, 'True');
+  assert.equal(parsed[3].questionType, 'short_answer');
+  assert.equal(parsed[3].marks, 5);
 
   assert.throws(() => parseAndValidateGroqQuestions('not json', 'mcq', 'Easy'));
   assert.throws(() => parseAndValidateGroqQuestions(JSON.stringify({ questions: [] }), 'mcq', 'Easy'));

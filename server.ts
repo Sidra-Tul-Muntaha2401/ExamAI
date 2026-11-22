@@ -2,18 +2,10 @@ import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
-import { attachOptionalUser } from './server/auth.ts';
-import { initializeDatabase } from './server/db.ts';
-import { createApiRouter } from './server/routes.ts';
+import { createApiApp } from './server/app.ts';
 
 async function startServer(): Promise<void> {
-  initializeDatabase();
-
-  const app = express();
-  app.set('trust proxy', 1);
-  app.use(express.json({ limit: '2mb' }));
-  app.use(attachOptionalUser);
-  app.use('/api', createApiRouter());
+  const app = await createApiApp();
 
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -37,13 +29,14 @@ async function startServer(): Promise<void> {
     });
   }
 
-  const port = Number(process.env.PORT) || 3000;
+  const envPort = Number(process.env.APP_PORT || process.env.PORT);
+  const port = Number.isFinite(envPort) && envPort > 0 && envPort !== 8080 ? envPort : 3000;
   app.listen(port, '0.0.0.0', () => {
-    console.log(`ExamPilot server listening on http://localhost:${port}`);
+    console.log(`ExamAI server listening on http://localhost:${port}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start ExamPilot server:', err);
+  console.error('Failed to start ExamAI server:', err);
   process.exit(1);
 });

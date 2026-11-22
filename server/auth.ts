@@ -1,8 +1,6 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import type { NextFunction, Request, Response } from 'express';
-import { db, dbDir } from './db.ts';
+import { store } from './store.ts';
 import type { UserProfile, UserRole } from '../src/types/index.ts';
 
 const SESSION_COOKIE_NAME = 'exampilot_session';
@@ -13,26 +11,10 @@ function getSessionSecret(): string {
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16) {
     return process.env.SESSION_SECRET.trim();
   }
-  if (cachedFallbackSecret) {
-    return cachedFallbackSecret;
-  }
-  const secretPath = path.join(dbDir, '.session_secret');
-  try {
-    if (fs.existsSync(secretPath)) {
-      const stored = fs.readFileSync(secretPath, 'utf8').trim();
-      if (stored.length >= 32) {
-        cachedFallbackSecret = stored;
-        return stored;
-      }
-    }
-    const generated = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(secretPath, generated, { mode: 0o600 });
-    cachedFallbackSecret = generated;
-    return generated;
-  } catch {
+  if (!cachedFallbackSecret) {
     cachedFallbackSecret = crypto.randomBytes(32).toString('hex');
-    return cachedFallbackSecret;
   }
+  return cachedFallbackSecret;
 }
 
 function hashToken(rawToken: string): string {
@@ -59,23 +41,27 @@ export interface AuthenticatedRequest extends Request {
   authSource?: 'bearer' | 'cookie';
 }
 
-export function createSession(userId: string): { token: string; expiresAt: string } {
+export async function createSession(userId: string): Promise<{ token: string; expiresAt: string }> {
   const token = crypto.randomBytes(32).toString('base64url');
   const tokenHash = hashToken(token);
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
   const id = `ses_${crypto.randomUUID()}`;
 
-  db.prepare(
-    'INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(id, userId, tokenHash, expiresAt, now);
+  await store.createSessionRecord({
+    id,
+    userId,
+    tokenHash,
+    expiresAt,
+    createdAt: now,
+  });
 
   return { token, expiresAt };
 }
 
-export function deleteSessionByToken(token: string): void {
+export async function deleteSessionByToken(token: string): Promise<void> {
   const tokenHash = hashToken(token);
-  db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+  await store.deleteSessionByTokenHash(tokenHash);
 }
 
 export function setSessionCookie(req: Request, res: Response, token: string): void {
@@ -114,45 +100,85 @@ export function extractRawToken(req: Request): { token: string | null; source: '
   return { token: null, source: null };
 }
 
-export function attachOptionalUser(req: AuthenticatedRequest, _res: Response, next: NextFunction): void {
-  const { token, source } = extractRawToken(req);
-  if (!token || !source) {
-    next();
-    return;
+function resolveWorkspaceRoleFromRequest(req: AuthenticatedRequest): UserRole {
+  const headerMode =
+    typeof req.headers['x-examai-mode'] === 'string'
+      ? req.headers['x-examai-mode'].trim().toLowerCase()
+      : '';
+  if (headerMode === 'teacher' || headerMode === 'student') {
+    return headerMode;
   }
 
-  const tokenHash = hashToken(token);
-  const row = db
-    .prepare(
-      `SELECT u.id, u.name, u.email, u.role, u.created_at, s.expires_at
-       FROM sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ?`
-    )
-    .get(tokenHash) as
-    | { id: string; name: string; email: string; role: UserRole; created_at: string; expires_at: string }
-    | undefined;
-
-  if (!row) {
-    next();
-    return;
+  const queryMode =
+    typeof req.query?.mode === 'string' ? req.query.mode.trim().toLowerCase() : '';
+  if (queryMode === 'teacher' || queryMode === 'student') {
+    return queryMode;
   }
 
-  if (Date.parse(row.expires_at) < Date.now()) {
-    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
-    next();
-    return;
+  if (req.path.startsWith('/teacher')) {
+    return 'teacher';
   }
+  return 'student';
+}
 
-  req.user = {
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    role: row.role,
-    createdAt: row.created_at,
-  };
-  req.authSource = source;
-  next();
+export async function attachOptionalUser(
+  req: AuthenticatedRequest,
+  _res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const requestedRole = resolveWorkspaceRoleFromRequest(req);
+    const { token, source } = extractRawToken(req);
+
+    if (token && source) {
+      const tokenHash = hashToken(token);
+      const sessionRow = await store.findSessionWithUser(tokenHash);
+      if (sessionRow) {
+        if (Date.parse(sessionRow.expiresAt) < Date.now()) {
+          await store.deleteSessionByTokenHash(tokenHash);
+        } else if (
+          !req.headers['x-examai-mode'] ||
+          sessionRow.user.role === requestedRole
+        ) {
+          req.user = sessionRow.user;
+          req.authSource = source;
+          next();
+          return;
+        }
+      }
+    }
+
+    // Direct workspace mode while login/register is disabled
+    const workspaceUserId =
+      requestedRole === 'teacher' ? 'usr_teacher_demo' : 'usr_student_demo';
+    const workspaceUser = await store.findUserById(workspaceUserId);
+
+    if (workspaceUser) {
+      req.user = workspaceUser;
+      next();
+      return;
+    }
+
+    req.user =
+      requestedRole === 'teacher'
+        ? {
+            id: 'usr_teacher_demo',
+            name: 'Dr. Elena Vance',
+            email: 'teacher@exampilot.edu',
+            role: 'teacher',
+            createdAt: new Date().toISOString(),
+          }
+        : {
+            id: 'usr_student_demo',
+            name: 'Maya Lin',
+            email: 'student@exampilot.edu',
+            role: 'student',
+            createdAt: new Date().toISOString(),
+          };
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
@@ -178,7 +204,7 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
           })()
         : false;
 
-    if (requestedWith !== 'ExamPilot' && !originMatchesHost) {
+    if (requestedWith !== 'ExamAI' && requestedWith !== 'ExamPilot' && !originMatchesHost) {
       res.status(403).json({ error: 'Cross-site request blocked.' });
       return;
     }

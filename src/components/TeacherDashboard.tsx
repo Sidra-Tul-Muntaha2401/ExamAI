@@ -1,18 +1,24 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  Activity,
   AlertCircle,
+  ArrowLeftRight,
   BarChart3,
   BookMarked,
   CheckCircle2,
   ClipboardCheck,
+  Database,
   FilePlus2,
   GraduationCap,
+  Home,
   LayoutDashboard,
   Loader2,
-  LogOut,
   Plus,
+  RefreshCw,
+  Search,
   Trash2,
   Upload,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../lib/api';
@@ -22,6 +28,7 @@ import type {
   OfficialExamSummary,
   QuestionType,
   QuizQuestion,
+  UsageOverviewData,
 } from '../types/index';
 import { DocumentStudio } from './DocumentStudio';
 import { BrandMark } from './BrandMark';
@@ -56,13 +63,17 @@ interface TeacherDashboardData {
   }>;
 }
 
-type TeacherTab = 'overview' | 'upload' | 'bank' | 'exams' | 'submissions';
+type TeacherTab = 'overview' | 'upload' | 'bank' | 'exams' | 'submissions' | 'usage';
 
 export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [tab, setTab] = useState<TeacherTab>('overview');
   const [data, setData] = useState<TeacherDashboardData | null>(null);
   const [bankQuestions, setBankQuestions] = useState<QuizQuestion[]>([]);
+  const [usageData, setUsageData] = useState<UsageOverviewData | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageSearch, setUsageSearch] = useState('');
+  const [usageRoleFilter, setUsageRoleFilter] = useState<'all' | 'student' | 'teacher' | 'anonymous'>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,6 +117,18 @@ export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) =>
   const [evalInputs, setEvalInputs] = useState<Record<string, { marks: number; feedback: string }>>({});
   const [savingEval, setSavingEval] = useState(false);
 
+  const loadUsage = useCallback(async () => {
+    setUsageLoading(true);
+    try {
+      const usage = await api.get<UsageOverviewData>('/api/teacher/usage-logs');
+      setUsageData(usage);
+    } catch {
+      // Non-fatal; dashboard still works
+    } finally {
+      setUsageLoading(false);
+    }
+  }, []);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -125,12 +148,14 @@ export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) =>
 
   useEffect(() => {
     void loadAll();
-  }, [loadAll]);
+    void loadUsage();
+  }, [loadAll, loadUsage]);
 
-  const handleLogout = async () => {
-    await logout();
-    onNavigate('/');
-  };
+  useEffect(() => {
+    if (tab === 'usage') {
+      void loadUsage();
+    }
+  }, [tab, loadUsage]);
 
   const handleAddManualBankQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -298,6 +323,7 @@ export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) =>
     { id: 'bank', label: 'Question Bank', icon: BookMarked },
     { id: 'exams', label: 'Create & Manage Exams', icon: FilePlus2 },
     { id: 'submissions', label: 'Submissions & Grading', icon: ClipboardCheck },
+    { id: 'usage', label: 'Usage & Requests', icon: Activity },
   ];
 
   const totalExamMarks = examQuestions.reduce((acc, q) => acc + (Number(q.marks) || 2), 0);
@@ -305,7 +331,7 @@ export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) =>
   return (
     <div className="min-h-screen bg-[#F5F1E8] text-[#252525] flex flex-col lg:flex-row">
       {/* Sidebar */}
-      <aside className="lg:w-64 bg-[#171717] text-white shrink-0 flex flex-col justify-between">
+      <aside className="lg:w-64 lg:sticky lg:top-0 lg:h-screen bg-[#171717] text-white shrink-0 flex flex-col justify-between overflow-y-auto">
         <div>
           <div className="px-6 h-16 flex items-center justify-between border-b border-[#303030]">
             <button
@@ -342,18 +368,26 @@ export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) =>
           </nav>
         </div>
 
-        <div className="hidden lg:block p-4 border-t border-[#303030] space-y-3">
+        <div className="hidden lg:block p-4 border-t border-[#303030] space-y-2.5">
           <div>
-            <div className="text-sm font-semibold text-white truncate">{user?.name}</div>
-            <div className="text-xs text-[#B5B0A6] truncate">{user?.email}</div>
+            <div className="text-sm font-semibold text-white truncate">{user.name}</div>
+            <div className="text-xs text-[#B5B0A6] truncate">Teacher Workspace</div>
           </div>
           <button
             type="button"
-            onClick={handleLogout}
+            onClick={() => onNavigate('/student')}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-[#303030] hover:bg-[#3D3D3D] text-xs font-semibold text-white transition-colors"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            Sign Out
+            <ArrowLeftRight className="w-3.5 h-3.5 text-[#DFC58E]" />
+            Switch to Student Mode
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('/')}
+            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-[#D6D0C4] hover:text-white hover:bg-[#303030]/60 transition-colors"
+          >
+            <Home className="w-3.5 h-3.5" />
+            Back to Home
           </button>
         </div>
       </aside>
@@ -374,11 +408,12 @@ export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) =>
             </button>
             <button
               type="button"
-              onClick={handleLogout}
-              aria-label="Sign out"
-              className="lg:hidden p-2 rounded-lg border border-[#E3DED3] text-[#77736C]"
+              onClick={() => onNavigate('/student')}
+              aria-label="Switch to Student Mode"
+              className="lg:hidden inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E3DED3] text-xs font-semibold text-[#252525]"
             >
-              <LogOut className="w-4 h-4" />
+              <ArrowLeftRight className="w-3.5 h-3.5" />
+              Student
             </button>
           </div>
         </header>
@@ -1064,6 +1099,246 @@ export function TeacherDashboard({ onNavigate }: { onNavigate: (path: string) =>
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {tab === 'usage' && (
+                <div className="space-y-6">
+                  <div className="bg-white border border-[#E3DED3] rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Activity className="w-5 h-5 text-[#66543A]" />
+                        <h2 className="text-lg font-display font-bold text-[#252525]">
+                          Platform Usage, Registered Users &amp; Request Audit
+                        </h2>
+                      </div>
+                      <p className="text-sm text-[#77736C] mt-1">
+                        Monitor who has registered, signed in, uploaded PDFs/DOCX files, generated AI questions, and interacted with exams.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#EFEBE2] border border-[#E3DED3] text-xs font-semibold text-[#252525]">
+                        <Database className="w-3.5 h-3.5 text-[#66543A]" />
+                        {usageData?.dbProvider === 'supabase' ? 'Supabase PostgreSQL' : 'Local SQLite'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void loadUsage()}
+                        disabled={usageLoading}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] disabled:opacity-50 text-[#171717] text-xs font-semibold transition-colors"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${usageLoading ? 'animate-spin' : ''}`} />
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  {usageData ? (
+                    <>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs font-medium text-[#77736C]">Total Tracked Requests</div>
+                          <div className="font-mono text-2xl font-bold text-[#252525] tabular-nums mt-1">
+                            {usageData.summary.totalRequests}
+                          </div>
+                        </div>
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs font-medium text-[#77736C]">Registered Accounts</div>
+                          <div className="font-mono text-2xl font-bold text-[#4476A8] tabular-nums mt-1">
+                            {usageData.summary.totalUsers}
+                          </div>
+                          <div className="text-[11px] text-[#77736C] mt-0.5 tabular-nums">
+                            {usageData.summary.totalStudents} students · {usageData.summary.totalTeachers} teachers
+                          </div>
+                        </div>
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs font-medium text-[#77736C]">Uploaded Documents</div>
+                          <div className="font-mono text-2xl font-bold text-[#66543A] tabular-nums mt-1">
+                            {usageData.summary.totalDocuments}
+                          </div>
+                        </div>
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs font-medium text-[#77736C]">AI Question Runs</div>
+                          <div className="font-mono text-2xl font-bold text-[#25845D] tabular-nums mt-1">
+                            {usageData.summary.totalAiGenerations}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Registered Users */}
+                      <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="flex items-center gap-2">
+                            <Users className="w-4 h-4 text-[#66543A]" />
+                            <h3 className="text-base font-display font-bold text-[#252525]">
+                              All Registered Users ({usageData.users.length})
+                            </h3>
+                          </div>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="border-b border-[#E3DED3] text-[#77736C]">
+                                <th className="py-2.5 pr-4 font-semibold">Name</th>
+                                <th className="py-2.5 pr-4 font-semibold">Email</th>
+                                <th className="py-2.5 pr-4 font-semibold">Role</th>
+                                <th className="py-2.5 font-semibold">Joined</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#E3DED3]">
+                              {usageData.users
+                                .filter((u) => {
+                                  if (usageRoleFilter === 'student' || usageRoleFilter === 'teacher') {
+                                    if (u.role !== usageRoleFilter) return false;
+                                  }
+                                  if (!usageSearch.trim()) return true;
+                                  const q = usageSearch.trim().toLowerCase();
+                                  return (
+                                    u.name.toLowerCase().includes(q) ||
+                                    u.email.toLowerCase().includes(q) ||
+                                    u.role.toLowerCase().includes(q)
+                                  );
+                                })
+                                .map((u) => (
+                                  <tr key={u.id}>
+                                    <td className="py-2.5 pr-4 font-semibold text-[#252525]">{u.name}</td>
+                                    <td className="py-2.5 pr-4 text-[#77736C]">{u.email}</td>
+                                    <td className="py-2.5 pr-4">
+                                      <span
+                                        className={`font-semibold uppercase tracking-wide text-[11px] ${
+                                          u.role === 'teacher' ? 'text-[#66543A]' : 'text-[#4476A8]'
+                                        }`}
+                                      >
+                                        {u.role}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 text-[#77736C] tabular-nums">
+                                      {new Date(u.createdAt).toLocaleString()}
+                                    </td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Request Logs */}
+                      <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                          <h3 className="text-base font-display font-bold text-[#252525]">
+                            Recent Requests &amp; User Actions ({usageData.logs.length})
+                          </h3>
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <div className="relative">
+                              <Search className="w-3.5 h-3.5 text-[#77736C] absolute left-3 top-1/2 -translate-y-1/2" />
+                              <input
+                                type="text"
+                                value={usageSearch}
+                                onChange={(e) => setUsageSearch(e.target.value)}
+                                placeholder="Filter by user, email, action..."
+                                className="pl-8 pr-3 py-1.5 text-xs bg-[#F5F1E8]/70 border border-[#E3DED3] rounded-lg focus:bg-white focus:border-[#C9A45C] outline-none min-w-[220px]"
+                              />
+                            </div>
+                            <select
+                              value={usageRoleFilter}
+                              onChange={(e) =>
+                                setUsageRoleFilter(
+                                  e.target.value as 'all' | 'student' | 'teacher' | 'anonymous'
+                                )
+                              }
+                              aria-label="Filter requests by user role"
+                              className="px-3 py-1.5 text-xs bg-[#F5F1E8]/70 border border-[#E3DED3] rounded-lg focus:bg-white focus:border-[#C9A45C] outline-none"
+                            >
+                              <option value="all">All Roles</option>
+                              <option value="student">Students</option>
+                              <option value="teacher">Teachers</option>
+                              <option value="anonymous">Guests / Pre-login</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {usageData.logs.length === 0 ? (
+                          <p className="text-sm text-[#77736C]">
+                            No requests logged yet. Sign-ins, registrations, PDF uploads, AI question generations, and exam actions will appear here automatically.
+                          </p>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse text-xs">
+                              <thead>
+                                <tr className="border-b border-[#E3DED3] text-[#77736C]">
+                                  <th className="py-2.5 pr-4 font-semibold">Time</th>
+                                  <th className="py-2.5 pr-4 font-semibold">User</th>
+                                  <th className="py-2.5 pr-4 font-semibold">Action &amp; Route</th>
+                                  <th className="py-2.5 pr-4 font-semibold">Details</th>
+                                  <th className="py-2.5 pr-4 font-semibold">Status</th>
+                                  <th className="py-2.5 font-semibold">IP</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-[#E3DED3]">
+                                {usageData.logs
+                                  .filter((log) => {
+                                    if (usageRoleFilter !== 'all' && log.userRole !== usageRoleFilter) {
+                                      return false;
+                                    }
+                                    if (!usageSearch.trim()) return true;
+                                    const q = usageSearch.trim().toLowerCase();
+                                    return (
+                                      log.userName.toLowerCase().includes(q) ||
+                                      log.userEmail.toLowerCase().includes(q) ||
+                                      log.action.toLowerCase().includes(q) ||
+                                      log.endpoint.toLowerCase().includes(q) ||
+                                      log.details.toLowerCase().includes(q)
+                                    );
+                                  })
+                                  .map((log) => (
+                                    <tr key={log.id} className="align-top">
+                                      <td className="py-2.5 pr-4 text-[#77736C] whitespace-nowrap tabular-nums">
+                                        {new Date(log.createdAt).toLocaleString()}
+                                      </td>
+                                      <td className="py-2.5 pr-4">
+                                        <div className="font-semibold text-[#252525]">{log.userName}</div>
+                                        <div className="text-[11px] text-[#77736C]">
+                                          {log.userEmail || '—'} · {log.userRole}
+                                        </div>
+                                      </td>
+                                      <td className="py-2.5 pr-4">
+                                        <div className="font-semibold text-[#252525]">{log.action}</div>
+                                        <div className="font-mono text-[11px] text-[#77736C]">
+                                          {log.method} {log.endpoint}
+                                        </div>
+                                      </td>
+                                      <td className="py-2.5 pr-4 text-[#252525] max-w-xs break-words">
+                                        {log.details || '—'}
+                                      </td>
+                                      <td className="py-2.5 pr-4 font-mono font-semibold tabular-nums">
+                                        <span
+                                          className={
+                                            log.statusCode >= 500
+                                              ? 'text-[#C64B4B]'
+                                              : log.statusCode >= 400
+                                                ? 'text-[#B77B25]'
+                                                : 'text-[#25845D]'
+                                          }
+                                        >
+                                          {log.statusCode}
+                                        </span>
+                                      </td>
+                                      <td className="py-2.5 font-mono text-[11px] text-[#77736C] whitespace-nowrap">
+                                        {log.ipAddress || '—'}
+                                      </td>
+                                    </tr>
+                                  ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="py-12 flex justify-center">
+                      <Loader2 className="w-6 h-6 text-[#66543A] animate-spin" />
                     </div>
                   )}
                 </div>

@@ -175,3 +175,33 @@ export interface ExamResultDetail {
     createdAt: string;
   }>;
 }
+
+export interface RequestLogRecord {
+  id: string;
+  userId: string | null;
+  userName: string;
+  userEmail: string;
+  userRole: string;
+  method: string;
+  endpoint: string;
+  action: string;
+  statusCode: number;
+  details: string;
+  ipAddress: string;
+  createdAt: string;
+}
+
+export interface UsageOverviewData {
+  dbProvider: 'supabase' | 'sqlite';
+  summary: {
+    totalRequests: number;
+    uniqueActiveUsers: number;
+    totalUsers: number;
+    totalStudents: number;
+    totalTeachers: number;
+    totalDocuments: number;
+    totalAiGenerations: number;
+  };
+  users: UserProfile[];
+  logs: RequestLogRecord[];
+}

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
+  ArrowLeftRight,
   Award,
   BarChart3,
   BookOpen,
@@ -8,10 +9,10 @@ import {
   Clock,
   FileText,
   History,
+  Home,
   LayoutDashboard,
   Loader2,
   Lock,
-  LogOut,
   Play,
   ShieldAlert,
   Trash2,
@@ -52,7 +53,7 @@ interface StudentDashboardData {
 type StudentTab = 'overview' | 'upload' | 'practice' | 'exams' | 'history';
 
 export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [tab, setTab] = useState<StudentTab>('overview');
   const [data, setData] = useState<StudentDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,11 +85,6 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    onNavigate('/');
-  };
-
   const navItems: Array<{ id: StudentTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'upload', label: 'Upload & AI Studio', icon: Upload },
@@ -100,7 +96,7 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
   return (
     <div className="min-h-screen bg-[#F5F1E8] text-[#252525] flex flex-col lg:flex-row">
       {/* Sidebar */}
-      <aside className="lg:w-64 bg-[#171717] text-white shrink-0 flex flex-col justify-between">
+      <aside className="lg:w-64 lg:sticky lg:top-0 lg:h-screen bg-[#171717] text-white shrink-0 flex flex-col justify-between overflow-y-auto">
         <div>
           <div className="px-6 h-16 flex items-center justify-between border-b border-[#303030]">
             <button
@@ -137,18 +133,26 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
           </nav>
         </div>
 
-        <div className="hidden lg:block p-4 border-t border-[#303030] space-y-3">
+        <div className="hidden lg:block p-4 border-t border-[#303030] space-y-2.5">
           <div>
-            <div className="text-sm font-semibold text-white truncate">{user?.name}</div>
-            <div className="text-xs text-[#B5B0A6] truncate">{user?.email}</div>
+            <div className="text-sm font-semibold text-white truncate">{user.name}</div>
+            <div className="text-xs text-[#B5B0A6] truncate">Student Workspace</div>
           </div>
           <button
             type="button"
-            onClick={handleLogout}
+            onClick={() => onNavigate('/teacher')}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-[#303030] hover:bg-[#3D3D3D] text-xs font-semibold text-white transition-colors"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            Sign Out
+            <ArrowLeftRight className="w-3.5 h-3.5 text-[#DFC58E]" />
+            Switch to Teacher Mode
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('/')}
+            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-[#D6D0C4] hover:text-white hover:bg-[#303030]/60 transition-colors"
+          >
+            <Home className="w-3.5 h-3.5" />
+            Back to Home
           </button>
         </div>
       </aside>
@@ -182,11 +186,12 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
             )}
             <button
               type="button"
-              onClick={handleLogout}
-              aria-label="Sign out"
-              className="lg:hidden p-2 rounded-lg border border-[#E3DED3] text-[#77736C]"
+              onClick={() => onNavigate('/teacher')}
+              aria-label="Switch to Teacher Mode"
+              className="lg:hidden inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E3DED3] text-xs font-semibold text-[#252525]"
             >
-              <LogOut className="w-4 h-4" />
+              <ArrowLeftRight className="w-3.5 h-3.5" />
+              Teacher
             </button>
           </div>
         </header>

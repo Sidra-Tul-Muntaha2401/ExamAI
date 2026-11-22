@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { AuthView } from './components/AuthView';
+import { api } from './lib/api';
+import type { UserRole } from './types/index';
 import { ExamRoom } from './components/ExamRoom';
 import { LandingPage } from './components/LandingPage';
 import { PracticeQuizRunner } from './components/PracticeQuizRunner';
@@ -15,91 +15,81 @@ function normalizePath(raw: string): string {
   return trimmed || '/';
 }
 
+function inferRoleFromPath(pathname: string, currentRole: UserRole): UserRole {
+  if (pathname === '/teacher') return 'teacher';
+  if (pathname === '/student' || pathname.startsWith('/practice/') || pathname.startsWith('/exam/')) {
+    return 'student';
+  }
+  return currentRole;
+}
+
 function AppRouter() {
-  const { user, loading } = useAuth();
+  const { activeRole, setWorkspaceRole } = useAuth();
   const [pathname, setPathname] = useState<string>(() => normalizePath(window.location.pathname));
 
   useEffect(() => {
     const onPopState = () => {
-      setPathname(normalizePath(window.location.pathname));
+      const next = normalizePath(window.location.pathname);
+      const nextRole = inferRoleFromPath(next, activeRole);
+      api.setWorkspaceMode(nextRole);
+      if (nextRole !== activeRole) {
+        setWorkspaceRole(nextRole);
+      }
+      setPathname(next);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  }, [activeRole, setWorkspaceRole]);
 
-  const navigate = useCallback((nextPath: string) => {
-    const normalized = normalizePath(nextPath);
-    if (normalizePath(window.location.pathname) !== normalized) {
-      window.history.pushState({}, '', normalized);
-    }
-    setPathname(normalized);
-    window.scrollTo({ top: 0, behavior: 'auto' });
-  }, []);
+  const navigate = useCallback(
+    (nextPath: string) => {
+      const normalized = normalizePath(nextPath);
+      const targetRole = inferRoleFromPath(normalized, activeRole);
+      api.setWorkspaceMode(targetRole);
+      if (targetRole !== activeRole) {
+        setWorkspaceRole(targetRole);
+      }
+      if (normalizePath(window.location.pathname) !== normalized) {
+        window.history.pushState({}, '', normalized);
+      }
+      setPathname(normalized);
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    },
+    [activeRole, setWorkspaceRole]
+  );
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#F5F1E8] flex items-center justify-center">
-        <Loader2 className="w-7 h-7 text-[#66543A] animate-spin" />
-      </div>
-    );
-  }
+  // Sync workspace API header immediately for direct URL loads
+  const effectiveRole = inferRoleFromPath(pathname, activeRole);
+  api.setWorkspaceMode(effectiveRole);
 
-  if (pathname === '/') {
-    return <LandingPage onNavigate={navigate} userRole={user?.role ?? null} />;
-  }
-
-  if (pathname === '/login' || pathname === '/register') {
-    if (user) {
-      return user.role === 'teacher' ? (
-        <TeacherDashboard onNavigate={navigate} />
-      ) : (
-        <StudentDashboard onNavigate={navigate} />
-      );
-    }
-    return <AuthView initialMode={pathname === '/register' ? 'register' : 'login'} onNavigate={navigate} />;
-  }
-
-  // Protected Routes: redirect unauthenticated visitors cleanly to Login
-  if (!user) {
-    return <AuthView initialMode="login" onNavigate={navigate} />;
+  if (pathname === '/' || pathname === '/login' || pathname === '/register') {
+    return <LandingPage onNavigate={navigate} />;
   }
 
   if (pathname.startsWith('/practice/')) {
     const quizId = pathname.slice('/practice/'.length);
-    if (user.role !== 'student') {
-      return <TeacherDashboard onNavigate={navigate} />;
-    }
     return <PracticeQuizRunner quizId={quizId} onNavigate={navigate} />;
   }
 
   if (pathname.startsWith('/exam/')) {
     const examId = pathname.slice('/exam/'.length);
-    if (user.role !== 'student') {
-      return <TeacherDashboard onNavigate={navigate} />;
-    }
     return <ExamRoom examId={examId} onNavigate={navigate} />;
   }
 
   if (pathname.startsWith('/results/')) {
     const attemptId = pathname.slice('/results/'.length);
-    return <ResultView attemptId={attemptId} userRole={user.role} onNavigate={navigate} />;
+    return <ResultView attemptId={attemptId} userRole={effectiveRole} onNavigate={navigate} />;
   }
 
   if (pathname === '/teacher') {
-    if (user.role !== 'teacher') {
-      return <StudentDashboard onNavigate={navigate} />;
-    }
     return <TeacherDashboard onNavigate={navigate} />;
   }
 
   if (pathname === '/student') {
-    if (user.role !== 'student') {
-      return <TeacherDashboard onNavigate={navigate} />;
-    }
     return <StudentDashboard onNavigate={navigate} />;
   }
 
-  return <LandingPage onNavigate={navigate} userRole={user.role} />;
+  return <LandingPage onNavigate={navigate} />;
 }
 
 export default function App() {

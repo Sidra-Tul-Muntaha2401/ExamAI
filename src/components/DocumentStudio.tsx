@@ -41,6 +41,11 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
 
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [autoGenerate, setAutoGenerate] = useState(true);
+  const [aiStatus, setAiStatus] = useState<{ loaded: boolean; aiConfigured: boolean }>({
+    loaded: false,
+    aiConfigured: true,
+  });
 
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [quizTitle, setQuizTitle] = useState('');
@@ -67,7 +72,45 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
 
   useEffect(() => {
     void loadDocuments();
+    void api
+      .get<{ aiConfigured?: boolean; groqConfigured?: boolean }>('/api/health')
+      .then((h) => {
+        setAiStatus({
+          loaded: true,
+          aiConfigured: Boolean(h.aiConfigured ?? h.groqConfigured),
+        });
+      })
+      .catch(() => {
+        setAiStatus((prev) => ({ ...prev, loaded: true }));
+      });
   }, []);
+
+  const generateForDocument = async (doc: DocumentRecord) => {
+    setGenError(null);
+    setSaveMessage(null);
+    setGenerating(true);
+
+    try {
+      const data = await api.post<{ questions: QuizQuestion[] }>('/api/ai/generate-questions', {
+        documentId: doc.id,
+        questionType,
+        difficulty,
+        count,
+        topic: topic || doc.title,
+      });
+      setQuestions(data.questions);
+      if (!quizTitle.trim()) {
+        setQuizTitle(`${doc.title} — ${difficulty} Quiz`);
+      }
+      setSaveMessage(
+        `Generated ${data.questions.length} ${questionType.replace('_', ' ')} question(s) from "${doc.title}". Review and save below.`
+      );
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : 'Failed to generate questions.');
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -75,6 +118,8 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
 
     setUploadError(null);
     setUploadSuccess(null);
+    setGenError(null);
+    setSaveMessage(null);
     setUploading(true);
 
     try {
@@ -93,6 +138,11 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
         `Extracted ${data.document.wordCount.toLocaleString()} words from ${data.document.originalFilename}.`
       );
       onSaved?.();
+      setUploading(false);
+
+      if (autoGenerate) {
+        await generateForDocument(data.document);
+      }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
@@ -115,31 +165,11 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
   };
 
   const handleGenerate = async () => {
-    if (!selectedDocId) {
+    if (!selectedDoc) {
       setGenError('Upload or select a document first.');
       return;
     }
-    setGenError(null);
-    setSaveMessage(null);
-    setGenerating(true);
-
-    try {
-      const data = await api.post<{ questions: QuizQuestion[] }>('/api/ai/generate-questions', {
-        documentId: selectedDocId,
-        questionType,
-        difficulty,
-        count,
-        topic,
-      });
-      setQuestions(data.questions);
-      if (!quizTitle.trim() && selectedDoc) {
-        setQuizTitle(`${selectedDoc.title} — ${difficulty} Quiz`);
-      }
-    } catch (err) {
-      setGenError(err instanceof Error ? err.message : 'Failed to generate questions.');
-    } finally {
-      setGenerating(false);
-    }
+    await generateForDocument(selectedDoc);
   };
 
   const handleAddManualQuestion = () => {
@@ -275,15 +305,25 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
               {uploading ? 'Extracting document text...' : 'Choose PDF or DOCX file'}
             </span>
             <span className="text-xs text-[#77736C] mt-1">
-              Supported: .pdf (text-based), .docx · Max 10 MB
+              Supported: .pdf (text-based), .docx · Max 10 MB (4.5 MB on Vercel)
             </span>
             <input
               type="file"
               accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               onChange={handleFileUpload}
-              disabled={uploading}
+              disabled={uploading || generating}
               className="sr-only"
             />
+          </label>
+
+          <label className="flex items-center gap-2.5 text-xs font-medium text-[#252525] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoGenerate}
+              onChange={(e) => setAutoGenerate(e.target.checked)}
+              className="accent-[#66543A] w-4 h-4 rounded"
+            />
+            <span>Auto-generate questions immediately after PDF/DOCX upload</span>
           </label>
 
           {uploadError && (
@@ -358,12 +398,22 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
         <div className="lg:col-span-7 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-5">
           <div>
             <h3 className="text-lg font-semibold text-[#252525]">
-              02. Extracted Text Preview & Question Generation
+              02. Extracted Text Preview &amp; Question Generation
             </h3>
             <p className="text-sm text-[#77736C] mt-1">
-              Review the extracted source text and configure Groq AI parameters. Questions are grounded strictly in the selected document.
+              Review the extracted source text and configure question parameters. ExamAI samples across your full document and generates grounded questions.
             </p>
           </div>
+
+          {aiStatus.loaded && !aiStatus.aiConfigured && (
+            <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-[#B77B25]/10 border border-[#B77B25]/35 text-xs text-[#66543A]">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#B77B25]" />
+              <span>
+                No AI API key is configured on this server yet (<code className="font-mono">GROQ_API_KEY</code> or{' '}
+                <code className="font-mono">GEMINI_API_KEY</code>). Text extraction works normally, and you can add questions manually or add an API key in your environment settings to enable AI question generation.
+              </span>
+            </div>
+          )}
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
@@ -464,7 +514,7 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
               ) : (
                 <RefreshCw className="w-4 h-4" />
               )}
-              {generating ? 'Generating via Groq AI...' : 'Generate Questions with Groq AI'}
+              {generating ? 'Generating Questions...' : 'Generate Questions with AI'}
             </button>
 
             <button
