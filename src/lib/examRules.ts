@@ -1,4 +1,11 @@
-import type { Difficulty, QuestionType, QuizQuestion } from '../types/index';
+import type {
+  AssignmentLifecycleStatus,
+  Difficulty,
+  ExamResultDetail,
+  QuestionType,
+  QuizQuestion,
+  StudentProgressSummary,
+} from '../types/index';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -243,6 +250,7 @@ export function parseAndValidateGroqQuestions(
   }
 
   const validated: QuizQuestion[] = [];
+  const seenPrompts = new Set<string>();
   for (let i = 0; i < rawList.length; i++) {
     const item = rawList[i] as Record<string, unknown>;
     if (!item || typeof item !== 'object') {
@@ -275,6 +283,16 @@ export function parseAndValidateGroqQuestions(
     if (!prompt || prompt.length < 8) {
       continue;
     }
+
+    const normalizedPromptKey = prompt
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (seenPrompts.has(normalizedPromptKey)) {
+      continue;
+    }
+    seenPrompts.add(normalizedPromptKey);
 
     const difficultyRaw = typeof item.difficulty === 'string' ? item.difficulty.trim() : requestedDifficulty;
     const difficulty: Difficulty =
@@ -515,4 +533,546 @@ export function shouldAutoSubmitForViolations(
     return false;
   }
   return tabSwitchCount >= maxTabSwitches;
+}
+
+export interface AnalyticsBucket {
+  key: string;
+  label: string;
+  totalQuestions: number;
+  answeredQuestions: number;
+  gradedQuestions: number;
+  correctQuestions: number;
+  marksEarned: number;
+  marksPossible: number;
+  accuracyPercent: number | null;
+}
+
+export interface AttemptAnalytics {
+  totalQuestions: number;
+  correctCount: number;
+  incorrectCount: number;
+  unansweredCount: number;
+  pendingCount: number;
+  timeTakenSeconds: number | null;
+  formattedDuration: string;
+  byQuestionType: AnalyticsBucket[];
+  byDifficulty: AnalyticsBucket[];
+  reviewFocusLabels: string[];
+}
+
+export function formatDurationSeconds(totalSeconds: number | null): string {
+  if (totalSeconds === null || !Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return '—';
+  }
+  const rounded = Math.round(totalSeconds);
+  const hrs = Math.floor(rounded / 3600);
+  const mins = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+  if (hrs > 0) {
+    return `${hrs}h ${mins}m ${secs}s`;
+  }
+  if (mins > 0) {
+    return `${mins}m ${secs}s`;
+  }
+  return `${secs}s`;
+}
+
+const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
+  mcq: 'Multiple Choice',
+  true_false: 'True / False',
+  short_answer: 'Short Answer',
+  long_answer: 'Long Answer',
+};
+
+export function computeAttemptAnalytics(result: Pick<ExamResultDetail, 'startedAt' | 'submittedAt' | 'questions'>): AttemptAnalytics {
+  let correctCount = 0;
+  let incorrectCount = 0;
+  let unansweredCount = 0;
+  let pendingCount = 0;
+
+  const typeMap = new Map<QuestionType, AnalyticsBucket>();
+  const diffMap = new Map<Difficulty, AnalyticsBucket>();
+
+  const getBucket = <K extends string>(map: Map<K, AnalyticsBucket>, key: K, label: string): AnalyticsBucket => {
+    let bucket = map.get(key);
+    if (!bucket) {
+      bucket = {
+        key,
+        label,
+        totalQuestions: 0,
+        answeredQuestions: 0,
+        gradedQuestions: 0,
+        correctQuestions: 0,
+        marksEarned: 0,
+        marksPossible: 0,
+        accuracyPercent: null,
+      };
+      map.set(key, bucket);
+    }
+    return bucket;
+  };
+
+  for (const q of result.questions) {
+    const hasAnswer = q.studentAnswer.trim().length > 0;
+    const isObjective = q.questionType === 'mcq' || q.questionType === 'true_false';
+    const isGraded = q.marksAwarded !== null;
+
+    if (!hasAnswer) {
+      unansweredCount += 1;
+    }
+
+    if (!isGraded) {
+      pendingCount += 1;
+    } else if (isObjective) {
+      if (q.isCorrect) {
+        correctCount += 1;
+      } else if (hasAnswer) {
+        incorrectCount += 1;
+      }
+    } else {
+      // Descriptive graded by teacher
+      if ((q.marksAwarded || 0) >= q.marks * 0.5) {
+        correctCount += 1;
+      } else if (hasAnswer) {
+        incorrectCount += 1;
+      }
+    }
+
+    const tb = getBucket(typeMap, q.questionType, QUESTION_TYPE_LABELS[q.questionType]);
+    const db = getBucket(diffMap, q.difficulty, q.difficulty);
+
+    for (const bucket of [tb, db]) {
+      bucket.totalQuestions += 1;
+      if (hasAnswer) bucket.answeredQuestions += 1;
+      if (isGraded) {
+        bucket.gradedQuestions += 1;
+        bucket.marksPossible += q.marks;
+        bucket.marksEarned += q.marksAwarded || 0;
+        if (isObjective ? Boolean(q.isCorrect) : (q.marksAwarded || 0) >= q.marks * 0.5) {
+          bucket.correctQuestions += 1;
+        }
+      }
+    }
+  }
+
+  const finalizeBuckets = (buckets: AnalyticsBucket[]): AnalyticsBucket[] =>
+    buckets.map((b) => ({
+      ...b,
+      marksEarned: Math.round(b.marksEarned * 100) / 100,
+      accuracyPercent:
+        b.marksPossible > 0 ? Math.round((b.marksEarned / b.marksPossible) * 1000) / 10 : null,
+    }));
+
+  const byQuestionType = finalizeBuckets(Array.from(typeMap.values()));
+  const diffOrder: Difficulty[] = ['Easy', 'Medium', 'Hard'];
+  const byDifficulty = finalizeBuckets(
+    diffOrder.map((d) => diffMap.get(d)).filter((b): b is AnalyticsBucket => Boolean(b))
+  );
+
+  let timeTakenSeconds: number | null = null;
+  if (result.startedAt && result.submittedAt) {
+    const startMs = Date.parse(result.startedAt);
+    const endMs = Date.parse(result.submittedAt);
+    if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs >= startMs) {
+      timeTakenSeconds = Math.round((endMs - startMs) / 1000);
+    }
+  }
+
+  const reviewFocusLabels: string[] = [];
+  for (const bucket of [...byDifficulty, ...byQuestionType]) {
+    if (bucket.gradedQuestions >= 2 && bucket.accuracyPercent !== null && bucket.accuracyPercent < 60) {
+      reviewFocusLabels.push(`${bucket.label} (${bucket.accuracyPercent}% scored across ${bucket.gradedQuestions} questions)`);
+    }
+  }
+  if (unansweredCount > 0) {
+    reviewFocusLabels.push(`${unansweredCount} unanswered question${unansweredCount > 1 ? 's' : ''} — practice pacing with timed quizzes`);
+  }
+
+  return {
+    totalQuestions: result.questions.length,
+    correctCount,
+    incorrectCount,
+    unansweredCount,
+    pendingCount,
+    timeTakenSeconds,
+    formattedDuration: formatDurationSeconds(timeTakenSeconds),
+    byQuestionType,
+    byDifficulty,
+    reviewFocusLabels,
+  };
+}
+
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+export function generateEnrollmentCode(randomBytes?: Uint8Array): string {
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    const byteVal =
+      randomBytes && randomBytes.length > i
+        ? randomBytes[i]
+        : Math.floor(Math.random() * 256);
+    code += CODE_ALPHABET[byteVal % CODE_ALPHABET.length];
+  }
+  return `EXAM-${code}`;
+}
+
+export function normalizeEnrollmentCode(raw: string): string {
+  return raw.trim().toUpperCase().replace(/\s+/g, '');
+}
+
+export function computeAssignmentLifecycleStatus(params: {
+  startTime?: string | null;
+  endTime?: string | null;
+  deadlineAt?: string | null;
+  attemptStatus?: 'in_progress' | 'submitted' | 'evaluated' | null;
+  nowMs?: number;
+}): AssignmentLifecycleStatus {
+  const now = params.nowMs ?? Date.now();
+  if (params.attemptStatus === 'submitted' || params.attemptStatus === 'evaluated') {
+    return 'Completed';
+  }
+  if (params.attemptStatus === 'in_progress') {
+    return 'Started';
+  }
+  const expiryIso = params.endTime || params.deadlineAt;
+  if (expiryIso) {
+    const expMs = Date.parse(expiryIso);
+    if (!Number.isNaN(expMs) && now > expMs) {
+      return 'Expired';
+    }
+  }
+  if (params.startTime) {
+    const startMs = Date.parse(params.startTime);
+    if (!Number.isNaN(startMs) && now >= startMs) {
+      return 'Not attempted';
+    }
+  }
+  return 'Assigned';
+}
+
+export interface StudentProgressExamInput {
+  examId: string;
+  examTitle: string;
+  subject: string;
+  attemptId?: string | null;
+  attemptStatus?: 'in_progress' | 'submitted' | 'evaluated' | null;
+  startedAt?: string | null;
+  submittedAt?: string | null;
+  result?: {
+    totalScore: number;
+    totalMarks: number;
+    percentage: number;
+    passed: boolean;
+    status: 'pending_evaluation' | 'evaluated';
+  } | null;
+  questionAnswers?: Array<{
+    topic: string;
+    marks: number;
+    marksAwarded: number | null;
+    isCorrect: boolean | null;
+    studentAnswer: string;
+  }>;
+}
+
+export interface StudentProgressPracticeInput {
+  id: string;
+  quizTitle: string;
+  topic: string;
+  score: number;
+  totalMarks: number;
+  percentage: number;
+  completedAt: string;
+}
+
+export function computeStudentProgressOverview(input: {
+  exams: StudentProgressExamInput[];
+  practiceAttempts: StudentProgressPracticeInput[];
+}): StudentProgressSummary {
+  const attempted = input.exams.filter((e) => Boolean(e.attemptId));
+  const completed = attempted.filter(
+    (e) => e.attemptStatus === 'submitted' || e.attemptStatus === 'evaluated'
+  );
+  const evaluated = completed.filter((e) => e.result?.status === 'evaluated');
+
+  const evaluatedPercentages = evaluated.map((e) => Number(e.result!.percentage));
+  const averageScore =
+    evaluatedPercentages.length > 0
+      ? Math.round((evaluatedPercentages.reduce((a, b) => a + b, 0) / evaluatedPercentages.length) * 10) / 10
+      : null;
+  const highestScore =
+    evaluatedPercentages.length > 0 ? Math.max(...evaluatedPercentages) : null;
+  const passCount = evaluated.filter((e) => Boolean(e.result?.passed)).length;
+  const passRate =
+    evaluated.length > 0 ? Math.round((passCount / evaluated.length) * 1000) / 10 : null;
+
+  let totalCorrect = 0;
+  let totalIncorrect = 0;
+  let totalUnanswered = 0;
+
+  const subjectMap = new Map<string, { subject: string; percentages: number[] }>();
+  const topicMap = new Map<
+    string,
+    {
+      topic: string;
+      subject: string;
+      attemptedQuestions: number;
+      correctQuestions: number;
+      marksEarned: number;
+      marksPossible: number;
+    }
+  >();
+
+  for (const ex of completed) {
+    if (ex.result?.status === 'evaluated') {
+      const subKey = ex.subject || 'General';
+      const entry = subjectMap.get(subKey) || { subject: subKey, percentages: [] };
+      entry.percentages.push(Number(ex.result.percentage));
+      subjectMap.set(subKey, entry);
+    }
+
+    for (const q of ex.questionAnswers || []) {
+      const answered = q.studentAnswer.trim().length > 0;
+      if (!answered) {
+        totalUnanswered += 1;
+      } else if (q.isCorrect === true || (q.marksAwarded !== null && q.marksAwarded >= q.marks * 0.5)) {
+        totalCorrect += 1;
+      } else if (q.marksAwarded !== null) {
+        totalIncorrect += 1;
+      }
+
+      const topicLabel = (q.topic || ex.subject || 'General').trim();
+      if (q.marksAwarded !== null && topicLabel) {
+        const key = topicLabel.toLowerCase();
+        const t = topicMap.get(key) || {
+          topic: topicLabel,
+          subject: ex.subject || 'General',
+          attemptedQuestions: 0,
+          correctQuestions: 0,
+          marksEarned: 0,
+          marksPossible: 0,
+        };
+        t.attemptedQuestions += 1;
+        t.marksPossible += Number(q.marks || 0);
+        t.marksEarned += Number(q.marksAwarded || 0);
+        if (q.isCorrect === true || Number(q.marksAwarded || 0) >= Number(q.marks || 1) * 0.5) {
+          t.correctQuestions += 1;
+        }
+        topicMap.set(key, t);
+      }
+    }
+  }
+
+  // Also include practice quizzes in topic breakdown if topic is present
+  for (const pa of input.practiceAttempts) {
+    const topicLabel = (pa.topic || '').trim();
+    if (topicLabel) {
+      const key = topicLabel.toLowerCase();
+      const t = topicMap.get(key) || {
+        topic: topicLabel,
+        subject: 'Practice Study',
+        attemptedQuestions: 0,
+        correctQuestions: 0,
+        marksEarned: 0,
+        marksPossible: 0,
+      };
+      t.attemptedQuestions += 1;
+      t.marksPossible += Number(pa.totalMarks || 0);
+      t.marksEarned += Number(pa.score || 0);
+      if (pa.percentage >= 70) {
+        t.correctQuestions += 1;
+      }
+      topicMap.set(key, t);
+    }
+  }
+
+  const practicePercentages = input.practiceAttempts.map((p) => Number(p.percentage));
+  const practiceAverage =
+    practicePercentages.length > 0
+      ? Math.round((practicePercentages.reduce((a, b) => a + b, 0) / practicePercentages.length) * 10) / 10
+      : null;
+
+  const subjectBreakdown = Array.from(subjectMap.values()).map((s) => ({
+    subject: s.subject,
+    attempts: s.percentages.length,
+    averagePercentage:
+      Math.round((s.percentages.reduce((a, b) => a + b, 0) / s.percentages.length) * 10) / 10,
+    highestPercentage: Math.max(...s.percentages),
+  }));
+
+  const topicBreakdown = Array.from(topicMap.values())
+    .filter((t) => t.marksPossible > 0)
+    .map((t) => ({
+      ...t,
+      marksEarned: Math.round(t.marksEarned * 100) / 100,
+      accuracyPercent: Math.round((t.marksEarned / t.marksPossible) * 1000) / 10,
+    }))
+    .sort((a, b) => a.accuracyPercent - b.accuracyPercent);
+
+  const strongTopics = topicBreakdown
+    .filter((t) => t.accuracyPercent >= 75)
+    .sort((a, b) => b.accuracyPercent - a.accuracyPercent)
+    .slice(0, 5)
+    .map((t) => ({
+      topic: t.topic,
+      accuracyPercent: t.accuracyPercent,
+      attemptedQuestions: t.attemptedQuestions,
+    }));
+
+  const weakTopics = topicBreakdown
+    .filter((t) => t.accuracyPercent < 65)
+    .slice(0, 5)
+    .map((t) => ({
+      topic: t.topic,
+      accuracyPercent: t.accuracyPercent,
+      attemptedQuestions: t.attemptedQuestions,
+    }));
+
+  const scoreTrend = [
+    ...evaluated.map((e) => ({
+      id: e.attemptId || e.examId,
+      label: e.examTitle,
+      subject: e.subject,
+      percentage: Number(e.result!.percentage),
+      kind: 'official' as const,
+      date: e.submittedAt || e.startedAt || new Date().toISOString(),
+    })),
+    ...input.practiceAttempts.map((p) => ({
+      id: p.id,
+      label: p.quizTitle,
+      subject: p.topic || 'Practice',
+      percentage: Number(p.percentage),
+      kind: 'practice' as const,
+      date: p.completedAt,
+    })),
+  ].sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+
+  const hasSufficientData = evaluated.length > 0 || input.practiceAttempts.length > 0;
+  const suggestions: string[] = [];
+
+  if (!hasSufficientData) {
+    suggestions.push(
+      'Complete at least one evaluated exam or practice quiz to unlock personalized topic recommendations.'
+    );
+  } else {
+    for (const w of weakTopics.slice(0, 3)) {
+      suggestions.push(
+        `Review "${w.topic}" (${w.accuracyPercent}% accuracy across ${w.attemptedQuestions} graded item${w.attemptedQuestions === 1 ? '' : 's'}). Generate a Medium practice quiz focused on this topic.`
+      );
+    }
+    if (totalUnanswered > 0) {
+      suggestions.push(
+        `You left ${totalUnanswered} exam question${totalUnanswered === 1 ? '' : 's'} unanswered. Use timed practice sets to build pacing before official exams.`
+      );
+    }
+    if (suggestions.length === 0 && averageScore !== null) {
+      suggestions.push(
+        averageScore >= 80
+          ? 'Strong consistency across evaluated assessments. Challenge yourself with Hard-level practice questions to deepen mastery.'
+          : 'Review explanations on missed questions in Exam History and drill weak sections with targeted practice quizzes.'
+      );
+    }
+  }
+
+  return {
+    hasSufficientData,
+    totalAttempted: attempted.length,
+    totalCompleted: completed.length,
+    evaluatedCount: evaluated.length,
+    averageScore,
+    highestScore,
+    passRate,
+    totalCorrect,
+    totalIncorrect,
+    totalUnanswered,
+    practiceAttemptsCount: input.practiceAttempts.length,
+    practiceAverage,
+    subjectBreakdown,
+    topicBreakdown,
+    strongTopics,
+    weakTopics,
+    scoreTrend,
+    suggestions,
+  };
+}
+
+export interface ClassSubmissionMetric {
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  percentage: number;
+  passed: boolean;
+  status: 'submitted' | 'evaluated';
+}
+
+export function computeTeacherClassAnalytics(params: {
+  members: Array<{ studentId: string; studentName: string; studentEmail: string }>;
+  submissions: ClassSubmissionMetric[];
+  expectedTotalAssignments?: number;
+}) {
+  const memberIds = new Set(params.members.map((m) => m.studentId));
+  const scoped = params.members.length > 0
+    ? params.submissions.filter((s) => memberIds.has(s.studentId))
+    : params.submissions;
+  const evaluated = scoped.filter((s) => s.status === 'evaluated');
+  const scores = evaluated.map((s) => Number(s.percentage));
+
+  const classAverage =
+    scores.length > 0 ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null;
+  const highestScore = scores.length > 0 ? Math.max(...scores) : null;
+  const lowestScore = scores.length > 0 ? Math.min(...scores) : null;
+
+  const expected = Math.max(params.expectedTotalAssignments ?? params.members.length, 0);
+  const uniqueSubmitters = new Set(scoped.map((s) => s.studentId)).size;
+  const completionRate =
+    expected > 0 ? Math.min(100, Math.round((uniqueSubmitters / expected) * 1000) / 10) : null;
+
+  const distribution = [
+    { label: '80–100%', count: scores.filter((x) => x >= 80).length },
+    { label: '60–79%', count: scores.filter((x) => x >= 60 && x < 80).length },
+    { label: '40–59%', count: scores.filter((x) => x >= 40 && x < 60).length },
+    { label: '0–39%', count: scores.filter((x) => x < 40).length },
+  ];
+
+  const byStudent = new Map<string, { id: string; name: string; email: string; scores: number[]; attempts: number }>();
+  for (const m of params.members) {
+    byStudent.set(m.studentId, { id: m.studentId, name: m.studentName, email: m.studentEmail, scores: [], attempts: 0 });
+  }
+  for (const s of scoped) {
+    const entry = byStudent.get(s.studentId) || {
+      id: s.studentId,
+      name: s.studentName,
+      email: s.studentEmail,
+      scores: [],
+      attempts: 0,
+    };
+    entry.attempts += 1;
+    if (s.status === 'evaluated') entry.scores.push(Number(s.percentage));
+    byStudent.set(s.studentId, entry);
+  }
+
+  const ranking = Array.from(byStudent.values())
+    .map((r) => ({
+      studentId: r.id,
+      studentName: r.name,
+      studentEmail: r.email,
+      attemptsCount: r.attempts,
+      averagePercentage:
+        r.scores.length > 0 ? Math.round((r.scores.reduce((a, b) => a + b, 0) / r.scores.length) * 10) / 10 : null,
+    }))
+    .sort((a, b) => (b.averagePercentage ?? -1) - (a.averagePercentage ?? -1));
+
+  const studentsNeedingSupport = ranking.filter(
+    (r) => (r.averagePercentage !== null && r.averagePercentage < 60) || r.attemptsCount === 0
+  );
+
+  return {
+    classAverage,
+    highestScore,
+    lowestScore,
+    completionRate,
+    evaluatedCount: evaluated.length,
+    distribution,
+    ranking,
+    studentsNeedingSupport,
+  };
 }

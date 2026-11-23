@@ -1,15 +1,37 @@
-export type UserRole = 'student' | 'teacher';
+export type UserRole = 'student' | 'teacher' | 'admin';
+
+export type AccountStatus = 'active' | 'deactivated' | 'suspended';
+
+export type TeacherApprovalStatus = 'pending' | 'approved' | 'rejected';
 
 export type QuestionType = 'mcq' | 'short_answer' | 'long_answer' | 'true_false';
 
 export type Difficulty = 'Easy' | 'Medium' | 'Hard';
+
+export interface TeacherProfileInfo {
+  userId: string;
+  subject: string;
+  institution: string;
+  bio: string;
+  approvalStatus: TeacherApprovalStatus;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  rejectionReason: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface UserProfile {
   id: string;
   name: string;
   email: string;
   role: UserRole;
+  avatarUrl?: string;
+  institution?: string;
+  accountStatus?: AccountStatus;
+  lastLoginAt?: string | null;
   createdAt: string;
+  teacherProfile?: TeacherProfileInfo | null;
 }
 
 export interface DocumentRecord {
@@ -58,6 +80,29 @@ export interface PracticeQuizRecord {
   } | null;
 }
 
+export type AssignmentLifecycleStatus =
+  | 'Assigned'
+  | 'Started'
+  | 'Completed'
+  | 'Not attempted'
+  | 'Expired';
+
+export interface ExamAssignmentRecord {
+  id: string;
+  examId: string;
+  teacherId: string;
+  classId: string | null;
+  className?: string | null;
+  studentId: string | null;
+  studentName?: string | null;
+  studentEmail?: string | null;
+  startTime: string | null;
+  endTime: string | null;
+  attemptLimit: number;
+  status: string;
+  assignedAt: string;
+}
+
 export interface OfficialExamSummary {
   id: string;
   teacherId: string;
@@ -82,6 +127,15 @@ export interface OfficialExamSummary {
   submissionCount?: number;
   pendingEvaluationCount?: number;
   createdAt: string;
+  assignmentInfo?: {
+    assignmentId: string;
+    classId: string | null;
+    className: string | null;
+    startTime: string | null;
+    endTime: string | null;
+    attemptLimit: number;
+    lifecycleStatus: AssignmentLifecycleStatus;
+  } | null;
   studentAttempt?: {
     id: string;
     status: 'in_progress' | 'submitted' | 'evaluated';
@@ -156,6 +210,7 @@ export interface ExamResultDetail {
     questionId: string;
     questionType: QuestionType;
     difficulty: Difficulty;
+    topic?: string;
     prompt: string;
     options: string[];
     marks: number;
@@ -174,6 +229,75 @@ export interface ExamResultDetail {
     details: string;
     createdAt: string;
   }>;
+}
+
+export interface ClassRecord {
+  id: string;
+  teacherId: string;
+  teacherName?: string;
+  name: string;
+  description: string;
+  subject: string;
+  enrollmentCode: string;
+  status: 'active' | 'archived';
+  memberCount: number;
+  assignedExamCount?: number;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
+export interface ClassMemberRecord {
+  id: string;
+  classId: string;
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  institution: string;
+  joinedAt: string;
+  status: 'active' | 'removed';
+  completedExamsCount: number;
+  avgPercentage: number | null;
+}
+
+export interface StudentProgressSummary {
+  hasSufficientData: boolean;
+  totalAttempted: number;
+  totalCompleted: number;
+  evaluatedCount: number;
+  averageScore: number | null;
+  highestScore: number | null;
+  passRate: number | null;
+  totalCorrect: number;
+  totalIncorrect: number;
+  totalUnanswered: number;
+  practiceAttemptsCount: number;
+  practiceAverage: number | null;
+  subjectBreakdown: Array<{
+    subject: string;
+    attempts: number;
+    averagePercentage: number;
+    highestPercentage: number;
+  }>;
+  topicBreakdown: Array<{
+    topic: string;
+    subject: string;
+    attemptedQuestions: number;
+    correctQuestions: number;
+    marksEarned: number;
+    marksPossible: number;
+    accuracyPercent: number;
+  }>;
+  strongTopics: Array<{ topic: string; accuracyPercent: number; attemptedQuestions: number }>;
+  weakTopics: Array<{ topic: string; accuracyPercent: number; attemptedQuestions: number }>;
+  scoreTrend: Array<{
+    id: string;
+    label: string;
+    subject: string;
+    percentage: number;
+    kind: 'official' | 'practice';
+    date: string;
+  }>;
+  suggestions: string[];
 }
 
 export interface RequestLogRecord {
@@ -204,4 +328,22 @@ export interface UsageOverviewData {
   };
   users: UserProfile[];
   logs: RequestLogRecord[];
+}
+
+export interface PlatformSettings {
+  allowTeacherRegistration: boolean;
+  requireTeacherApproval: boolean;
+  defaultMaxTabSwitches: number;
+  allowPublicPractice: boolean;
+}
+
+export interface AdminAuditLogRecord {
+  id: string;
+  adminId: string | null;
+  adminName?: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  details: string;
+  createdAt: string;
 }

@@ -2,13 +2,16 @@ import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
+  BarChart3,
   CheckCircle2,
   Clock,
   Loader2,
   ShieldAlert,
+  Sparkles,
   XCircle,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { computeAttemptAnalytics } from '../lib/examRules';
 import type { ExamResultDetail, UserRole } from '../types/index';
 
 interface ResultViewProps {
@@ -21,6 +24,9 @@ export function ResultView({ attemptId, userRole, onNavigate }: ResultViewProps)
   const [result, setResult] = useState<ExamResultDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [aiExplanations, setAiExplanations] = useState<Record<string, string>>({});
+  const [explainingId, setExplainingId] = useState<string | null>(null);
+  const [explainErrors, setExplainErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const load = async () => {
@@ -38,7 +44,30 @@ export function ResultView({ attemptId, userRole, onNavigate }: ResultViewProps)
     void load();
   }, [attemptId]);
 
-  const backPath = userRole === 'teacher' ? '/teacher' : '/student';
+  const handleExplainQuestion = async (questionId: string) => {
+    if (explainingId) return;
+    setExplainingId(questionId);
+    setExplainErrors((prev) => {
+      const next = { ...prev };
+      delete next[questionId];
+      return next;
+    });
+    try {
+      const res = await api.post<{ explanation: string }>(`/api/results/${attemptId}/explain`, {
+        questionId,
+      });
+      setAiExplanations((prev) => ({ ...prev, [questionId]: res.explanation }));
+    } catch (err) {
+      setExplainErrors((prev) => ({
+        ...prev,
+        [questionId]: err instanceof Error ? err.message : 'Unable to generate explanation.',
+      }));
+    } finally {
+      setExplainingId(null);
+    }
+  };
+
+  const backPath = userRole === 'admin' ? '/admin' : userRole === 'teacher' ? '/teacher' : '/student';
 
   if (loading) {
     return (
@@ -68,27 +97,29 @@ export function ResultView({ attemptId, userRole, onNavigate }: ResultViewProps)
     );
   }
 
+  const analytics = computeAttemptAnalytics(result);
+
   return (
     <div className="min-h-screen bg-[#F5F1E8] text-[#252525]">
       <header className="bg-white border-b border-[#E3DED3]">
-        <div className="max-w-[1100px] mx-auto px-6 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-[1100px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <button
             type="button"
             onClick={() => onNavigate(backPath)}
-            className="inline-flex items-center gap-2 text-sm font-semibold text-[#66543A] hover:text-[#252525]"
+            className="inline-flex items-center gap-2 text-sm font-semibold text-[#66543A] hover:text-[#252525] whitespace-nowrap"
           >
             <ArrowLeft className="w-4 h-4" />
             Back to Dashboard
           </button>
-          <span className="text-xs font-mono text-[#77736C]">
+          <span className="text-xs font-mono text-[#77736C] truncate">
             Submitted {result.submittedAt ? new Date(result.submittedAt).toLocaleString() : '—'}
           </span>
         </div>
       </header>
 
-      <main className="max-w-[1100px] mx-auto px-6 py-8 space-y-8">
+      <main className="max-w-[1100px] mx-auto px-4 sm:px-6 py-8 space-y-8">
         {/* Summary Banner */}
-        <div className="bg-[#171717] text-white rounded-2xl p-8 grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
+        <div className="bg-[#171717] text-white rounded-2xl p-6 sm:p-8 grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
           <div className="md:col-span-7 space-y-2">
             <div className="text-xs font-semibold text-[#DFC58E]">{result.subject}</div>
             <h1 className="text-2xl lg:text-3xl font-display font-bold">{result.examTitle}</h1>
@@ -115,7 +146,7 @@ export function ResultView({ attemptId, userRole, onNavigate }: ResultViewProps)
             </div>
           </div>
 
-          <div className="md:col-span-5 grid grid-cols-3 gap-4 bg-[#303030] border border-white/10 rounded-xl p-5">
+          <div className="md:col-span-5 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-2 gap-3.5 bg-[#303030] border border-white/10 rounded-xl p-4 sm:p-5">
             <div>
               <div className="text-[11px] text-[#D6D0C4]">Total Score</div>
               <div className="font-mono text-xl font-bold tabular-nums mt-0.5">
@@ -129,13 +160,122 @@ export function ResultView({ attemptId, userRole, onNavigate }: ResultViewProps)
               </div>
             </div>
             <div>
+              <div className="text-[11px] text-[#D6D0C4]">Time Taken</div>
+              <div className="font-mono text-lg font-bold tabular-nums mt-0.5">
+                {analytics.formattedDuration}
+              </div>
+            </div>
+            <div>
               <div className="text-[11px] text-[#D6D0C4]">Tab Leaves</div>
-              <div className="font-mono text-xl font-bold tabular-nums mt-0.5">
+              <div className="font-mono text-lg font-bold tabular-nums mt-0.5">
                 {result.tabSwitchCount}
               </div>
             </div>
           </div>
         </div>
+
+        {/* Real Attempt Analytics & Breakdown */}
+        <section aria-label="Attempt analytics" className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+            <div className="bg-white border border-[#E3DED3] rounded-xl p-4">
+              <div className="text-xs text-[#77736C]">Correct / Met Threshold</div>
+              <div className="font-mono text-2xl font-bold text-[#25845D] tabular-nums mt-1">
+                {analytics.correctCount}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E3DED3] rounded-xl p-4">
+              <div className="text-xs text-[#77736C]">Incorrect</div>
+              <div className="font-mono text-2xl font-bold text-[#C64B4B] tabular-nums mt-1">
+                {analytics.incorrectCount}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E3DED3] rounded-xl p-4">
+              <div className="text-xs text-[#77736C]">Unanswered</div>
+              <div className="font-mono text-2xl font-bold text-[#77736C] tabular-nums mt-1">
+                {analytics.unansweredCount}
+              </div>
+            </div>
+            <div className="bg-white border border-[#E3DED3] rounded-xl p-4">
+              <div className="text-xs text-[#77736C]">Pending Teacher Review</div>
+              <div className="font-mono text-2xl font-bold text-[#4476A8] tabular-nums mt-1">
+                {analytics.pendingCount}
+              </div>
+            </div>
+          </div>
+
+          {(analytics.byDifficulty.length > 0 || analytics.byQuestionType.length > 0) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-white border border-[#E3DED3] rounded-xl p-5 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-bold text-[#252525]">
+                  <BarChart3 className="w-4 h-4 text-[#66543A]" />
+                  <span>Accuracy by Question Type</span>
+                </div>
+                <div className="space-y-2.5">
+                  {analytics.byQuestionType.map((b) => (
+                    <div key={b.key} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-[#252525]">
+                          {b.label} ({b.totalQuestions})
+                        </span>
+                        <span className="font-mono font-semibold text-[#66543A] tabular-nums">
+                          {b.accuracyPercent !== null
+                            ? `${b.marksEarned}/${b.marksPossible} marks (${b.accuracyPercent}%)`
+                            : 'Pending review'}
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-[#EFEBE2] rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#C9A45C]"
+                          style={{ width: `${b.accuracyPercent ?? 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-white border border-[#E3DED3] rounded-xl p-5 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-bold text-[#252525]">
+                  <BarChart3 className="w-4 h-4 text-[#66543A]" />
+                  <span>Performance by Difficulty</span>
+                </div>
+                <div className="space-y-2.5">
+                  {analytics.byDifficulty.map((b) => (
+                    <div key={b.key} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-[#252525]">
+                          {b.label} ({b.totalQuestions})
+                        </span>
+                        <span className="font-mono font-semibold text-[#66543A] tabular-nums">
+                          {b.accuracyPercent !== null
+                            ? `${b.marksEarned}/${b.marksPossible} marks (${b.accuracyPercent}%)`
+                            : 'Pending review'}
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-[#EFEBE2] rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#66543A]"
+                          style={{ width: `${b.accuracyPercent ?? 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {analytics.reviewFocusLabels.length > 0 && (
+            <div className="bg-[#EFEBE2] border border-[#E3DED3] rounded-xl p-4 space-y-1.5">
+              <div className="text-xs font-bold text-[#66543A]">Recommended Next Study Focus</div>
+              <ul className="list-disc pl-5 text-xs text-[#252525] space-y-1">
+                {analytics.reviewFocusLabels.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
 
         {/* Question-by-Question Review */}
         <div className="space-y-4">
@@ -194,6 +334,37 @@ export function ResultView({ attemptId, userRole, onNavigate }: ResultViewProps)
                   )}
                 </div>
               )}
+
+              <div className="pt-1">
+                {!aiExplanations[q.questionId] ? (
+                  <button
+                    type="button"
+                    disabled={explainingId === q.questionId}
+                    onClick={() => void handleExplainQuestion(q.questionId)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E3DED3] bg-[#F5F1E8]/70 hover:bg-[#EFEBE2] text-xs font-semibold text-[#66543A] transition-colors disabled:opacity-50"
+                  >
+                    {explainingId === q.questionId ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5 text-[#C9A45C]" />
+                    )}
+                    {explainingId === q.questionId ? 'Generating AI Concept Explanation...' : 'Explain Concept Deeper with AI'}
+                  </button>
+                ) : (
+                  <div className="p-3.5 rounded-lg bg-[#171717] text-white text-xs space-y-1.5">
+                    <div className="inline-flex items-center gap-1.5 font-semibold text-[#DFC58E]">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      AI Study Explanation (Post-Exam Review Only)
+                    </div>
+                    <p className="text-[#E6E2D8] leading-relaxed whitespace-pre-wrap">
+                      {aiExplanations[q.questionId]}
+                    </p>
+                  </div>
+                )}
+                {explainErrors[q.questionId] && (
+                  <p className="text-xs text-[#C64B4B] mt-1.5">{explainErrors[q.questionId]}</p>
+                )}
+              </div>
             </div>
           ))}
         </div>

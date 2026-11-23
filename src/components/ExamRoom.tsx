@@ -5,10 +5,12 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock,
+  Flag,
   Info,
   Loader2,
   Lock,
   Maximize2,
+  RefreshCw,
   ShieldAlert,
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -36,9 +38,11 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
 
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [markedForReview, setMarkedForReview] = useState<Record<string, boolean>>({});
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
   const [savingState, setSavingState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveErrorMsg, setSaveErrorMsg] = useState<string | null>(null);
+  const [pendingSaveCount, setPendingSaveCount] = useState(0);
 
   const [showInstructions, setShowInstructions] = useState(false);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
@@ -53,6 +57,9 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
   const [tabSwitches, setTabSwitches] = useState(0);
 
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const pendingSyncRef = useRef<Record<string, string>>({});
+  const targetEndMsRef = useRef<number | null>(null);
+  const lastTabHiddenAtRef = useRef<number>(0);
   const autoSubmittedRef = useRef(false);
   const suppressFocusEventsUntilRef = useRef(0);
   const lastThrottleRef = useRef<Record<string, number>>({});
@@ -91,8 +98,21 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
         if (res.session) {
           setSession(res.session);
           setAnswers(res.session.savedAnswers || {});
+          const serverEndMs = Date.now() + res.session.remainingSeconds * 1000;
+          const deadlineMs = res.session.exam.deadlineAt ? Date.parse(res.session.exam.deadlineAt) : NaN;
+          targetEndMsRef.current = !Number.isNaN(deadlineMs)
+            ? Math.min(serverEndMs, deadlineMs)
+            : serverEndMs;
           setRemainingSeconds(res.session.remainingSeconds);
           setTabSwitches(res.session.tabSwitchCount);
+          try {
+            const storedFlags = sessionStorage.getItem(`examai_review_${res.session.attemptId}`);
+            if (storedFlags) {
+              setMarkedForReview(JSON.parse(storedFlags) as Record<string, boolean>);
+            }
+          } catch {
+            // Ignore storage access restrictions
+          }
           if (!res.session.exam.requireFullscreen) {
             setLockdownEntered(true);
           }
@@ -114,6 +134,8 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
 
   const submitExam = useCallback(async () => {
     if (!session || submitting) return;
+    Object.values(saveTimersRef.current).forEach(clearTimeout);
+    saveTimersRef.current = {};
     setSubmitting(true);
     setError(null);
     try {
@@ -121,6 +143,11 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
         `/api/exams/attempts/${session.attemptId}/submit`,
         { answers: answersRef.current }
       );
+      try {
+        sessionStorage.removeItem(`examai_review_${session.attemptId}`);
+      } catch {
+        // Ignore storage errors
+      }
       exitFullscreenSafely();
       onNavigate(`/results/${res.attemptId}`);
     } catch (err) {
@@ -220,24 +247,42 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
     }
   }, [session, fullscreenUnavailable, warningAcknowledged, acknowledgingWarning, recordSecurityEvent]);
 
-  // Countdown timer synced to initial server remainingSeconds
+  // Drift-free countdown timer anchored to server-aligned end timestamp
   useEffect(() => {
-    if (!session) return;
-    const interval = setInterval(() => {
-      setRemainingSeconds((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          if (!autoSubmittedRef.current) {
-            autoSubmittedRef.current = true;
-            void submitExam();
-          }
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
+    if (!session || targetEndMsRef.current === null) return;
+
+    const syncClock = () => {
+      if (targetEndMsRef.current === null) return;
+      const secsLeft = Math.max(0, Math.ceil((targetEndMsRef.current - Date.now()) / 1000));
+      setRemainingSeconds(secsLeft);
+      if (secsLeft <= 0 && !autoSubmittedRef.current) {
+        autoSubmittedRef.current = true;
+        void submitExam();
+      }
+    };
+
+    syncClock();
+    const interval = setInterval(syncClock, 500);
+    window.addEventListener('focus', syncClock);
+    document.addEventListener('visibilitychange', syncClock);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', syncClock);
+      document.removeEventListener('visibilitychange', syncClock);
+    };
   }, [session, submitExam]);
+
+  // Warn before accidental browser close or refresh during an active exam
+  useEffect(() => {
+    if (!session || !lockdownEntered || submitting || autoSubmittedRef.current) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (submitting || autoSubmittedRef.current) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [session, lockdownEntered, submitting]);
 
   // Anti-cheat tab visibility, focus-loss, and fullscreen enforcement
   useEffect(() => {
@@ -245,6 +290,7 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
 
     const handleVisibility = () => {
       if (document.visibilityState === 'hidden') {
+        lastTabHiddenAtRef.current = Date.now();
         void recordSecurityEvent('tab_hidden', 'Student switched away from exam tab');
         setWarningAcknowledged(false);
         setLockdownPausedReason(
@@ -261,7 +307,14 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
     };
 
     const handleBlur = () => {
-      if (Date.now() < suppressFocusEventsUntilRef.current || submitting || autoSubmittedRef.current) {
+      // Avoid double-counting when window.blur and document.visibilitychange fire together on a single tab switch
+      if (
+        document.visibilityState === 'hidden' ||
+        Date.now() - lastTabHiddenAtRef.current < 350 ||
+        Date.now() < suppressFocusEventsUntilRef.current ||
+        submitting ||
+        autoSubmittedRef.current
+      ) {
         return;
       }
       void recordSecurityEvent('window_blur', 'Exam window lost focus');
@@ -374,11 +427,48 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
           questionId,
           answer: value,
         });
-        setSavingState('saved');
+        delete pendingSyncRef.current[questionId];
+        const remainingPending = Object.keys(pendingSyncRef.current).length;
+        setPendingSaveCount(remainingPending);
+        setSavingState(remainingPending > 0 ? 'error' : 'saved');
       } catch (err) {
+        pendingSyncRef.current[questionId] = value;
+        setPendingSaveCount(Object.keys(pendingSyncRef.current).length);
         setSavingState('error');
         setSaveErrorMsg(err instanceof Error ? err.message : 'Unable to save answer.');
       }
+    },
+    [session]
+  );
+
+  const retryPendingSaves = useCallback(async () => {
+    const entries = Object.entries(pendingSyncRef.current);
+    if (entries.length === 0) return;
+    for (const [qId, val] of entries) {
+      await persistAnswer(qId, val);
+    }
+  }, [persistAnswer]);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      void retryPendingSaves();
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [retryPendingSaves]);
+
+  const toggleMarkForReview = useCallback(
+    (questionId: string) => {
+      if (!session) return;
+      setMarkedForReview((prev) => {
+        const next = { ...prev, [questionId]: !prev[questionId] };
+        try {
+          sessionStorage.setItem(`examai_review_${session.attemptId}`, JSON.stringify(next));
+        } catch {
+          // Ignore storage restrictions
+        }
+        return next;
+      });
     },
     [session]
   );
@@ -492,6 +582,7 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
   const questions = session.questions;
   const activeQ = questions[currentIdx];
   const answeredCount = questions.filter((q) => (answers[q.id] || '').trim().length > 0).length;
+  const markedForReviewCount = questions.filter((q) => Boolean(markedForReview[q.id])).length;
   const isLowTime = remainingSeconds <= 120;
   const isPausedByLockout = Boolean(lockdownPausedReason);
 
@@ -499,16 +590,16 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
     <div className="min-h-screen bg-[#F5F1E8] text-[#252525] flex flex-col">
       {/* Calm, Focused Exam Top Bar */}
       <header className="sticky top-0 z-20 bg-white border-b border-[#E3DED3]">
-        <div className="max-w-[1200px] mx-auto px-6 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 min-h-16 py-2 flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-base font-display font-bold text-[#252525] truncate">{session.exam.title}</h1>
-            <div className="text-xs text-[#77736C] truncate tabular-nums">
+            <h1 className="text-sm sm:text-base font-display font-bold text-[#252525] truncate">{session.exam.title}</h1>
+            <div className="text-[11px] sm:text-xs text-[#77736C] truncate tabular-nums">
               {session.exam.subject} · {answeredCount} of {questions.length} answered · AI &amp; Notes Locked
             </div>
           </div>
 
-          <div className="flex items-center gap-4 shrink-0">
-            <div className="hidden sm:flex items-center gap-1.5 text-xs text-[#77736C]">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <div aria-live="polite" className="hidden sm:flex items-center gap-1.5 text-xs text-[#77736C]">
               {savingState === 'saving' && (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-[#4476A8]" />
@@ -522,26 +613,37 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
                 </>
               )}
               {savingState === 'error' && (
-                <span className="text-[#C64B4B]">{saveErrorMsg || 'Save failed'}</span>
+                <button
+                  type="button"
+                  onClick={() => void retryPendingSaves()}
+                  className="inline-flex items-center gap-1 text-[#C64B4B] hover:underline font-semibold"
+                  title={saveErrorMsg || 'Retry saving unsynced answers'}
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retry Save{pendingSaveCount > 1 ? ` (${pendingSaveCount})` : ''}</span>
+                </button>
               )}
             </div>
 
             <div
               data-testid="exam-timer"
-              className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg border font-mono text-sm font-bold tabular-nums ${
+              aria-label={`Time remaining ${formatTimer(remainingSeconds)}`}
+              className={`inline-flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 rounded-lg border font-mono text-xs sm:text-sm font-bold tabular-nums ${
                 isLowTime
                   ? 'bg-[#C64B4B]/10 border-[#C64B4B] text-[#982E2E]'
                   : 'bg-[#EFEBE2]/70 border-[#E3DED3] text-[#252525]'
               }`}
             >
-              <Clock className="w-4 h-4" />
+              <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span>{formatTimer(remainingSeconds)}</span>
             </div>
 
             <button
               type="button"
               onClick={() => setShowInstructions((v) => !v)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E3DED3] text-xs font-semibold text-[#77736C] hover:text-[#252525] hover:bg-[#EFEBE2]/60"
+              aria-expanded={showInstructions}
+              aria-label="Exam instructions"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-[#E3DED3] text-xs font-semibold text-[#77736C] hover:text-[#252525] hover:bg-[#EFEBE2]/60"
             >
               <Info className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Instructions</span>
@@ -550,7 +652,7 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
             <button
               type="button"
               onClick={() => setShowSubmitConfirm(true)}
-              className="px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-xs font-semibold transition-colors whitespace-nowrap"
+              className="px-3 sm:px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-xs font-semibold transition-colors whitespace-nowrap"
             >
               Submit Exam
             </button>
@@ -608,13 +710,28 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
         }`}
       >
         <div className="lg:col-span-8 bg-white border border-[#E3DED3] rounded-2xl p-6 lg:p-10 space-y-6">
-          <div className="flex items-center justify-between text-xs text-[#77736C]">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#77736C]">
             <span className="font-mono font-semibold text-[#66543A]">
               Question {currentIdx + 1} of {questions.length}
             </span>
-            <span className="tabular-nums">
-              {activeQ.questionType.replace('_', ' ').toUpperCase()} · {activeQ.marks} marks
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="tabular-nums">
+                {activeQ.questionType.replace('_', ' ').toUpperCase()} · {activeQ.difficulty} · {activeQ.marks} marks
+              </span>
+              <button
+                type="button"
+                aria-pressed={Boolean(markedForReview[activeQ.id])}
+                onClick={() => toggleMarkForReview(activeQ.id)}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  markedForReview[activeQ.id]
+                    ? 'bg-[#B77B25]/15 border-[#B77B25] text-[#7A4F12]'
+                    : 'bg-[#F5F1E8] border-[#E3DED3] text-[#77736C] hover:text-[#252525]'
+                }`}
+              >
+                <Flag className="w-3.5 h-3.5" />
+                {markedForReview[activeQ.id] ? 'Flagged for Review' : 'Mark for Review'}
+              </button>
+            </div>
           </div>
 
           <div className="w-full h-1.5 bg-[#EFEBE2] rounded-full overflow-hidden">
@@ -712,31 +829,57 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
             <h3 className="text-sm font-bold text-[#252525]">Question Navigation</h3>
             <p className="text-xs text-[#77736C] mt-0.5 tabular-nums">
               {answeredCount} answered · {questions.length - answeredCount} remaining
+              {markedForReviewCount > 0 ? ` · ${markedForReviewCount} flagged` : ''}
             </p>
           </div>
 
           <div className="grid grid-cols-5 gap-2">
             {questions.map((q, idx) => {
               const answered = (answers[q.id] || '').trim().length > 0;
+              const flagged = Boolean(markedForReview[q.id]);
               const active = idx === currentIdx;
               return (
                 <button
                   key={q.id}
                   type="button"
                   onClick={() => setCurrentIdx(idx)}
-                  aria-label={`Go to question ${idx + 1}`}
-                  className={`h-10 rounded-lg font-mono text-xs font-semibold border transition-colors ${
+                  aria-current={active ? 'step' : undefined}
+                  aria-label={`Go to question ${idx + 1}${answered ? ', answered' : ', unanswered'}${flagged ? ', marked for review' : ''}`}
+                  className={`relative h-10 rounded-lg font-mono text-xs font-semibold border transition-colors ${
                     active
                       ? 'bg-[#C9A45C] border-[#C9A45C] text-[#171717]'
-                      : answered
-                        ? 'bg-[#EFEBE2] border-[#66543A]/40 text-[#252525]'
-                        : 'bg-[#F5F1E8]/60 border-[#E3DED3] text-[#77736C] hover:border-[#66543A]'
+                      : flagged
+                        ? 'bg-[#B77B25]/15 border-[#B77B25] text-[#7A4F12]'
+                        : answered
+                          ? 'bg-[#EFEBE2] border-[#66543A]/40 text-[#252525]'
+                          : 'bg-[#F5F1E8]/60 border-[#E3DED3] text-[#77736C] hover:border-[#66543A]'
                   }`}
                 >
                   {idx + 1}
+                  {flagged && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#B77B25]"
+                    />
+                  )}
                 </button>
               );
             })}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#77736C]">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-xs bg-[#EFEBE2] border border-[#66543A]/40" />
+              Answered
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-xs bg-[#B77B25]/25 border border-[#B77B25]" />
+              Review
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-xs bg-[#F5F1E8] border border-[#E3DED3]" />
+              Unanswered
+            </span>
           </div>
 
           <div className="pt-4 border-t border-[#E3DED3] space-y-2 text-xs text-[#77736C]">
@@ -855,6 +998,21 @@ export function ExamRoom({ examId, onNavigate }: ExamRoomProps) {
             {answeredCount < questions.length && (
               <div className="p-3 rounded-lg bg-[#B77B25]/15 border border-[#B77B25] text-xs text-[#7A4F12]">
                 You still have {questions.length - answeredCount} unanswered question(s).
+              </div>
+            )}
+
+            {markedForReviewCount > 0 && (
+              <div className="p-3 rounded-lg bg-[#EFEBE2] border border-[#E3DED3] text-xs text-[#66543A] flex items-center gap-2">
+                <Flag className="w-3.5 h-3.5 shrink-0 text-[#B77B25]" />
+                <span>
+                  You have <strong>{markedForReviewCount}</strong> question(s) marked for review.
+                </span>
+              </div>
+            )}
+
+            {pendingSaveCount > 0 && (
+              <div className="p-3 rounded-lg bg-[#C64B4B]/10 border border-[#C64B4B]/40 text-xs text-[#982E2E]">
+                {pendingSaveCount} offline draft(s) will be sent directly with your final submission.
               </div>
             )}
 

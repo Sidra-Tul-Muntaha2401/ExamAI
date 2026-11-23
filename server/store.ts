@@ -4,10 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
+  computeAssignmentLifecycleStatus,
   computeFinalResult,
   gradeObjectiveQuestions,
 } from '../src/lib/examRules.ts';
 import type {
+  AccountStatus,
   Difficulty,
   DocumentRecord,
   ExamResultDetail,
@@ -15,6 +17,8 @@ import type {
   QuestionType,
   QuizQuestion,
   RequestLogRecord,
+  TeacherApprovalStatus,
+  TeacherProfileInfo,
   UsageOverviewData,
   UserProfile,
   UserRole,
@@ -61,10 +65,16 @@ function resolveWritableDbPath(): string {
 
 export interface StoredUserRow {
   id: string;
+  auth_user_id?: string | null;
   name: string;
   email: string;
   password_hash: string;
   role: UserRole;
+  avatar_url?: string;
+  institution?: string;
+  account_status?: AccountStatus;
+  last_login_at?: string | null;
+  updated_at?: string | null;
   created_at: string;
 }
 
@@ -112,6 +122,7 @@ export interface StoredQuestionRow {
   exam_id: string;
   question_type: QuestionType;
   difficulty: Difficulty;
+  topic?: string;
   prompt: string;
   correct_answer: string;
   explanation: string;
@@ -139,6 +150,8 @@ function buildSeedPayload() {
       email: 'teacher@exampilot.edu',
       password_hash: hashPassword('Teacher123!'),
       role: 'teacher' as UserRole,
+      institution: 'ExamAI Faculty',
+      account_status: 'active' as AccountStatus,
       created_at: now,
     },
     {
@@ -147,6 +160,8 @@ function buildSeedPayload() {
       email: 'student@exampilot.edu',
       password_hash: hashPassword('Student123!'),
       role: 'student' as UserRole,
+      institution: 'State University',
+      account_status: 'active' as AccountStatus,
       created_at: now,
     },
     {
@@ -155,6 +170,8 @@ function buildSeedPayload() {
       email: 'marcus@exampilot.edu',
       password_hash: hashPassword('Student123!'),
       role: 'student' as UserRole,
+      institution: 'State University',
+      account_status: 'active' as AccountStatus,
       created_at: now,
     },
   ];
@@ -441,6 +458,32 @@ class ExamDataStore {
   private supabase: SupabaseClient | null = null;
   private initPromise: Promise<void> | null = null;
 
+  public getSupabasePublicConfig(): { url: string | null; anonKey: string | null } {
+    const rawUrl = stripWrappingQuotes(process.env.SUPABASE_URL) || stripWrappingQuotes(process.env.VITE_SUPABASE_URL);
+    const anonKey =
+      stripWrappingQuotes(process.env.SUPABASE_ANON_KEY) ||
+      stripWrappingQuotes(process.env.VITE_SUPABASE_ANON_KEY);
+    const normalized = normalizeSupabaseUrl(rawUrl);
+    if (!normalized.url || !anonKey || isPlaceholderValue(anonKey)) {
+      return { url: null, anonKey: null };
+    }
+    return { url: normalized.url, anonKey };
+  }
+
+  public getSql(): SqliteDatabase {
+    if (!this.sqliteDb) {
+      throw new Error(this.initError || 'SQLite database is not initialized.');
+    }
+    return this.sqliteDb;
+  }
+
+  public getSupa(): SupabaseClient {
+    if (!this.supabase) {
+      throw new Error(this.initError || 'Supabase client is not initialized.');
+    }
+    return this.supabase;
+  }
+
   async initialize(): Promise<void> {
     if (this.ready) return;
     if (this.initPromise) return this.initPromise;
@@ -484,6 +527,7 @@ class ExamDataStore {
             this.provider = 'supabase';
             this.supabase = client;
             await this.seedSupabaseIfEmpty();
+            await this.ensureOptionalEnvAdminSupabase();
             this.initError = null;
             this.fallbackNotice = null;
             this.ready = true;
@@ -526,6 +570,7 @@ class ExamDataStore {
 
       this.createSqliteTables();
       this.seedSqliteIfEmpty();
+      this.ensureSqliteDefaultsAndEnvAdmin();
       this.initError = null;
       this.ready = true;
     } catch (err) {
@@ -537,30 +582,48 @@ class ExamDataStore {
     }
   }
 
-  private getSql(): SqliteDatabase {
-    if (!this.sqliteDb) {
-      throw new Error(this.initError || 'SQLite database is not initialized.');
-    }
-    return this.sqliteDb;
-  }
-
-  private getSupa(): SupabaseClient {
-    if (!this.supabase) {
-      throw new Error(this.initError || 'Supabase client is not initialized.');
-    }
-    return this.supabase;
-  }
-
   private createSqliteTables(): void {
     const db = this.getSql();
     db.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
+        auth_user_id TEXT UNIQUE,
         name TEXT NOT NULL,
         email TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        role TEXT NOT NULL CHECK (role IN ('student', 'teacher')),
+        password_hash TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL CHECK (role IN ('student', 'teacher', 'admin')),
+        avatar_url TEXT NOT NULL DEFAULT '',
+        institution TEXT NOT NULL DEFAULT '',
+        account_status TEXT NOT NULL DEFAULT 'active' CHECK (account_status IN ('active', 'deactivated', 'suspended')),
+        last_login_at TEXT,
+        updated_at TEXT,
         created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS profiles (
+        id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        auth_user_id TEXT UNIQUE,
+        full_name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL CHECK (role IN ('student', 'teacher', 'admin')),
+        avatar_url TEXT NOT NULL DEFAULT '',
+        institution TEXT NOT NULL DEFAULT '',
+        account_status TEXT NOT NULL DEFAULT 'active' CHECK (account_status IN ('active', 'deactivated', 'suspended')),
+        created_at TEXT NOT NULL,
+        last_login_at TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS teacher_profiles (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL DEFAULT '',
+        institution TEXT NOT NULL DEFAULT '',
+        bio TEXT NOT NULL DEFAULT '',
+        approval_status TEXT NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+        approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        approved_at TEXT,
+        rejection_reason TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -569,10 +632,37 @@ class ExamDataStore {
         expires_at TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS classes (
+        id TEXT PRIMARY KEY,
+        teacher_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        subject TEXT NOT NULL DEFAULT '',
+        enrollment_code TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS class_members (
+        id TEXT PRIMARY KEY,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        joined_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'removed')),
+        UNIQUE (class_id, student_id)
+      );
       CREATE TABLE IF NOT EXISTS documents (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        owner_role TEXT NOT NULL CHECK (owner_role IN ('student', 'teacher')),
+        owner_role TEXT NOT NULL CHECK (owner_role IN ('student', 'teacher', 'admin')),
         title TEXT NOT NULL,
         original_filename TEXT NOT NULL,
         file_type TEXT NOT NULL CHECK (file_type IN ('pdf', 'docx')),
@@ -641,9 +731,14 @@ class ExamDataStore {
       CREATE TABLE IF NOT EXISTS exam_assignments (
         id TEXT PRIMARY KEY,
         exam_id TEXT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-        student_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        assigned_at TEXT NOT NULL,
-        UNIQUE (exam_id, student_id)
+        teacher_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        class_id TEXT REFERENCES classes(id) ON DELETE CASCADE,
+        student_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        start_time TEXT,
+        end_time TEXT,
+        attempt_limit INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'started', 'completed', 'expired')),
+        assigned_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS questions (
         id TEXT PRIMARY KEY,
@@ -651,6 +746,7 @@ class ExamDataStore {
         bank_question_id TEXT REFERENCES question_bank(id) ON DELETE SET NULL,
         question_type TEXT NOT NULL CHECK (question_type IN ('mcq', 'short_answer', 'long_answer', 'true_false')),
         difficulty TEXT NOT NULL CHECK (difficulty IN ('Easy', 'Medium', 'Hard')),
+        topic TEXT NOT NULL DEFAULT '',
         prompt TEXT NOT NULL,
         correct_answer TEXT NOT NULL DEFAULT '',
         explanation TEXT NOT NULL DEFAULT '',
@@ -738,7 +834,125 @@ class ExamDataStore {
         ip_address TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS platform_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS admin_audit_logs (
+        id TEXT PRIMARY KEY,
+        admin_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        details TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );
     `);
+
+    // Upgrade legacy SQLite tables safely without losing existing data
+    const usersSchema = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'")
+      .get() as { sql?: string } | undefined;
+    if (usersSchema?.sql && !usersSchema.sql.includes("'admin'")) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        BEGIN;
+        CREATE TABLE users_migrated (
+          id TEXT PRIMARY KEY,
+          auth_user_id TEXT UNIQUE,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL DEFAULT '',
+          role TEXT NOT NULL CHECK (role IN ('student', 'teacher', 'admin')),
+          avatar_url TEXT NOT NULL DEFAULT '',
+          institution TEXT NOT NULL DEFAULT '',
+          account_status TEXT NOT NULL DEFAULT 'active' CHECK (account_status IN ('active', 'deactivated', 'suspended')),
+          last_login_at TEXT,
+          updated_at TEXT,
+          created_at TEXT NOT NULL
+        );
+        INSERT INTO users_migrated (id, name, email, password_hash, role, created_at)
+        SELECT id, name, email, password_hash, role, created_at FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_migrated RENAME TO users;
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+      `);
+    } else {
+      const userCols = new Set(
+        (db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>).map((c) => c.name)
+      );
+      if (!userCols.has('auth_user_id')) db.exec('ALTER TABLE users ADD COLUMN auth_user_id TEXT;');
+      if (!userCols.has('avatar_url')) db.exec("ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT '';");
+      if (!userCols.has('institution')) db.exec("ALTER TABLE users ADD COLUMN institution TEXT NOT NULL DEFAULT '';");
+      if (!userCols.has('account_status')) db.exec("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active';");
+      if (!userCols.has('last_login_at')) db.exec('ALTER TABLE users ADD COLUMN last_login_at TEXT;');
+      if (!userCols.has('updated_at')) db.exec('ALTER TABLE users ADD COLUMN updated_at TEXT;');
+    }
+
+    const docsSchema = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'")
+      .get() as { sql?: string } | undefined;
+    if (docsSchema?.sql && !docsSchema.sql.includes("'admin'")) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        BEGIN;
+        CREATE TABLE documents_migrated (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          owner_role TEXT NOT NULL CHECK (owner_role IN ('student', 'teacher', 'admin')),
+          title TEXT NOT NULL,
+          original_filename TEXT NOT NULL,
+          file_type TEXT NOT NULL CHECK (file_type IN ('pdf', 'docx')),
+          file_size INTEGER NOT NULL,
+          extracted_text TEXT NOT NULL,
+          word_count INTEGER NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        INSERT INTO documents_migrated SELECT * FROM documents;
+        DROP TABLE documents;
+        ALTER TABLE documents_migrated RENAME TO documents;
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+
+    const assignCols = new Set(
+      (db.prepare('PRAGMA table_info(exam_assignments)').all() as Array<{ name: string }>).map((c) => c.name)
+    );
+    if (!assignCols.has('class_id')) {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        BEGIN;
+        CREATE TABLE exam_assignments_migrated (
+          id TEXT PRIMARY KEY,
+          exam_id TEXT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+          teacher_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          class_id TEXT REFERENCES classes(id) ON DELETE CASCADE,
+          student_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          start_time TEXT,
+          end_time TEXT,
+          attempt_limit INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'started', 'completed', 'expired')),
+          assigned_at TEXT NOT NULL
+        );
+        INSERT INTO exam_assignments_migrated (id, exam_id, student_id, assigned_at)
+        SELECT id, exam_id, student_id, assigned_at FROM exam_assignments;
+        DROP TABLE exam_assignments;
+        ALTER TABLE exam_assignments_migrated RENAME TO exam_assignments;
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+      `);
+    }
+
+    const qCols = new Set(
+      (db.prepare('PRAGMA table_info(questions)').all() as Array<{ name: string }>).map((c) => c.name)
+    );
+    if (!qCols.has('topic')) {
+      db.exec("ALTER TABLE questions ADD COLUMN topic TEXT NOT NULL DEFAULT '';");
+    }
 
     const examCols = db.prepare('PRAGMA table_info(exams)').all() as Array<{ name: string }>;
     const colNames = new Set(examCols.map((c) => c.name));
@@ -760,11 +974,52 @@ class ExamDataStore {
 
     const s = buildSeedPayload();
     const insertUser = db.prepare(
-      'INSERT INTO users (id, name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      `INSERT INTO users (id, name, email, password_hash, role, institution, account_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const insertProfile = db.prepare(
+      `INSERT OR IGNORE INTO profiles (id, full_name, email, role, institution, account_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const u of s.users) {
-      insertUser.run(u.id, u.name, u.email, u.password_hash, u.role, u.created_at);
+      insertUser.run(u.id, u.name, u.email, u.password_hash, u.role, u.institution || '', u.account_status || 'active', u.created_at, s.now);
+      insertProfile.run(u.id, u.name, u.email, u.role, u.institution || '', u.account_status || 'active', u.created_at, s.now);
     }
+
+    db.prepare(
+      `INSERT OR IGNORE INTO teacher_profiles (id, user_id, subject, institution, bio, approval_status, approved_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?)`
+    ).run(
+      'tp_teacher_demo',
+      s.teacherId,
+      'Computer Science & Relational Databases',
+      'ExamAI Faculty',
+      'Faculty lead for CS 301 Database Systems & Assessment Architecture.',
+      s.now,
+      s.now,
+      s.now
+    );
+
+    db.prepare(
+      `INSERT OR IGNORE INTO classes (id, teacher_id, name, description, subject, enrollment_code, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+    ).run(
+      'cls_cs301_demo',
+      s.teacherId,
+      'CS 301 · Database Systems (Fall)',
+      'Core relational modeling, normalization, SQL querying, and ACID transaction design.',
+      'CS 301 · Database Systems',
+      'EXAM-CS301A',
+      s.now,
+      s.now
+    );
+
+    const insertMember = db.prepare(
+      `INSERT OR IGNORE INTO class_members (id, class_id, student_id, joined_at, status)
+       VALUES (?, ?, ?, ?, 'active')`
+    );
+    insertMember.run('cm_maya_cs301', 'cls_cs301_demo', s.studentId, s.now);
+    insertMember.run('cm_marcus_cs301', 'cls_cs301_demo', s.student2Id, s.now);
 
     const insertDoc = db.prepare(
       `INSERT INTO documents (id, user_id, owner_role, title, original_filename, file_type, file_size, extracted_text, word_count, created_at)
@@ -810,12 +1065,12 @@ class ExamDataStore {
     insertExam.run('exam_norm_quiz1', s.teacherId, 'Quiz 1: Functional Dependencies & 3NF', 'CS 301 · Database Systems', 'Complete both the multiple-choice items and the short explanation on update anomalies.', 20, 9, 5, s.futureDeadline, 'published', 0, 0, 1, 1, 1, s.now);
 
     const insertExamQ = db.prepare(
-      `INSERT INTO questions (id, exam_id, bank_question_id, question_type, difficulty, prompt, correct_answer, explanation, suggested_answer, marking_guidance, marks, question_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO questions (id, exam_id, bank_question_id, question_type, difficulty, topic, prompt, correct_answer, explanation, suggested_answer, marking_guidance, marks, question_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     s.bankItems.forEach((b, idx) => {
       const qId = `eq_mid_${idx + 1}`;
-      insertExamQ.run(qId, 'exam_db_midterm', b.id, b.type, b.difficulty, b.prompt, b.correct || '', b.explanation || '', b.suggested || '', b.guidance || '', b.marks, idx + 1);
+      insertExamQ.run(qId, 'exam_db_midterm', b.id, b.type, b.difficulty, b.topic || 'Database Systems', b.prompt, b.correct || '', b.explanation || '', b.suggested || '', b.guidance || '', b.marks, idx + 1);
       if (b.options) {
         b.options.forEach((opt, oIdx) => {
           insertOpt.run(`opt_${qId}_${oIdx}`, qId, null, opt, oIdx, opt === b.correct ? 1 : 0);
@@ -825,7 +1080,7 @@ class ExamDataStore {
 
     [s.bankItems[0], s.bankItems[1], s.bankItems[4]].forEach((b, idx) => {
       const qId = `eq_q1_${idx + 1}`;
-      insertExamQ.run(qId, 'exam_norm_quiz1', b.id, b.type, b.difficulty, b.prompt, b.correct || '', b.explanation || '', b.suggested || '', b.guidance || '', b.marks, idx + 1);
+      insertExamQ.run(qId, 'exam_norm_quiz1', b.id, b.type, b.difficulty, b.topic || 'Normalization', b.prompt, b.correct || '', b.explanation || '', b.suggested || '', b.guidance || '', b.marks, idx + 1);
       if (b.options) {
         b.options.forEach((opt, oIdx) => {
           insertOpt.run(`opt_${qId}_${oIdx}`, qId, null, opt, oIdx, opt === b.correct ? 1 : 0);
@@ -881,7 +1136,61 @@ class ExamDataStore {
     if (existing && existing.length > 0) return;
 
     const s = buildSeedPayload();
-    await sb.from('users').insert(s.users);
+    await sb.from('users').insert(
+      s.users.map((u) => ({
+        ...u,
+        updated_at: s.now,
+      }))
+    );
+    await sb.from('profiles').upsert(
+      s.users.map((u) => ({
+        id: u.id,
+        full_name: u.name,
+        email: u.email,
+        role: u.role,
+        institution: u.institution || '',
+        account_status: u.account_status || 'active',
+        created_at: u.created_at,
+        updated_at: s.now,
+      })),
+      { onConflict: 'id' }
+    );
+    await sb.from('teacher_profiles').upsert(
+      {
+        id: 'tp_teacher_demo',
+        user_id: s.teacherId,
+        subject: 'Computer Science & Relational Databases',
+        institution: 'ExamAI Faculty',
+        bio: 'Faculty lead for CS 301 Database Systems & Assessment Architecture.',
+        approval_status: 'approved',
+        approved_at: s.now,
+        rejection_reason: '',
+        created_at: s.now,
+        updated_at: s.now,
+      },
+      { onConflict: 'user_id' }
+    );
+    await sb.from('classes').upsert(
+      {
+        id: 'cls_cs301_demo',
+        teacher_id: s.teacherId,
+        name: 'CS 301 · Database Systems (Fall)',
+        description: 'Core relational modeling, normalization, SQL querying, and ACID transaction design.',
+        subject: 'CS 301 · Database Systems',
+        enrollment_code: 'EXAM-CS301A',
+        status: 'active',
+        created_at: s.now,
+        updated_at: s.now,
+      },
+      { onConflict: 'id' }
+    );
+    await sb.from('class_members').upsert(
+      [
+        { id: 'cm_maya_cs301', class_id: 'cls_cs301_demo', student_id: s.studentId, joined_at: s.now, status: 'active' },
+        { id: 'cm_marcus_cs301', class_id: 'cls_cs301_demo', student_id: s.student2Id, joined_at: s.now, status: 'active' },
+      ],
+      { onConflict: 'class_id,student_id' }
+    );
     await sb.from('documents').insert(s.documents);
     await sb.from('practice_quizzes').insert({
       id: 'pq_bio_1',
@@ -995,6 +1304,7 @@ class ExamDataStore {
         bank_question_id: b.id,
         question_type: b.type,
         difficulty: b.difficulty,
+        topic: b.topic || 'Database Systems',
         prompt: b.prompt,
         correct_answer: b.correct || '',
         explanation: b.explanation || '',
@@ -1023,6 +1333,7 @@ class ExamDataStore {
         bank_question_id: b.id,
         question_type: b.type,
         difficulty: b.difficulty,
+        topic: b.topic || 'Normalization',
         prompt: b.prompt,
         correct_answer: b.correct || '',
         explanation: b.explanation || '',
@@ -1106,64 +1417,297 @@ class ExamDataStore {
     ]);
   }
 
-  // =========================================================================
-  // USERS
-  // =========================================================================
-  async findUserByEmail(email: string): Promise<StoredUserRow | null> {
-    if (this.provider === 'supabase') {
-      const { data, error } = await this.getSupa()
-        .from('users')
-        .select('id, name, email, password_hash, role, created_at')
-        .eq('email', email)
-        .maybeSingle();
-      if (error) throw new Error(error.message);
-      return (data as StoredUserRow | null) ?? null;
+  private ensureSqliteDefaultsAndEnvAdmin(): void {
+    const db = this.getSql();
+    const now = new Date().toISOString();
+
+    const defaultSettings: Record<string, string> = {
+      allowTeacherRegistration: 'true',
+      requireTeacherApproval: 'true',
+      defaultMaxTabSwitches: '3',
+      allowPublicPractice: 'true',
+    };
+    const upsertSetting = db.prepare(
+      `INSERT OR IGNORE INTO platform_settings (key, value, updated_at) VALUES (?, ?, ?)`
+    );
+    for (const [k, v] of Object.entries(defaultSettings)) {
+      upsertSetting.run(k, v, now);
     }
-    const row = this.getSql()
-      .prepare('SELECT id, name, email, password_hash, role, created_at FROM users WHERE email = ?')
-      .get(email) as StoredUserRow | undefined;
-    return row ?? null;
+
+    // Ensure every user has a corresponding profiles row and existing teachers have teacher_profiles
+    const allUsers = db.prepare('SELECT id, auth_user_id, name, email, role, avatar_url, institution, account_status, last_login_at, created_at FROM users').all();
+    const ensureProf = db.prepare(
+      `INSERT OR IGNORE INTO profiles (id, auth_user_id, full_name, email, role, avatar_url, institution, account_status, created_at, last_login_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const ensureTp = db.prepare(
+      `INSERT OR IGNORE INTO teacher_profiles (id, user_id, subject, institution, bio, approval_status, approved_at, created_at, updated_at)
+       VALUES (?, ?, '', ?, '', 'approved', ?, ?, ?)`
+    );
+    for (const u of allUsers) {
+      ensureProf.run(
+        u.id,
+        u.auth_user_id || null,
+        u.name,
+        u.email,
+        u.role,
+        u.avatar_url || '',
+        u.institution || '',
+        u.account_status || 'active',
+        u.created_at,
+        u.last_login_at || null,
+        now
+      );
+      if (u.role === 'teacher') {
+        ensureTp.run(`tp_${u.id}`, u.id, u.institution || '', now, String(u.created_at), now);
+      }
+    }
+
+    // Optional env-configured initial admin bootstrap (ADMIN_EMAIL + ADMIN_PASSWORD)
+    const adminEmail = stripWrappingQuotes(process.env.ADMIN_EMAIL).trim().toLowerCase();
+    const adminPassword = stripWrappingQuotes(process.env.ADMIN_PASSWORD);
+    if (adminEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) && adminPassword.length >= 8) {
+      const existing = db.prepare('SELECT id, role FROM users WHERE email = ?').get(adminEmail) as { id: string; role: string } | undefined;
+      if (!existing) {
+        const adminId = `usr_admin_${crypto.randomUUID().slice(0, 8)}`;
+        const passwordHash = hashPassword(adminPassword);
+        db.prepare(
+          `INSERT INTO users (id, name, email, password_hash, role, institution, account_status, created_at, updated_at)
+           VALUES (?, 'Platform Administrator', ?, ?, 'admin', 'ExamAI Administration', 'active', ?, ?)`
+        ).run(adminId, adminEmail, passwordHash, now, now);
+        db.prepare(
+          `INSERT OR IGNORE INTO profiles (id, full_name, email, role, institution, account_status, created_at, updated_at)
+           VALUES (?, 'Platform Administrator', ?, 'admin', 'ExamAI Administration', 'active', ?, ?)`
+        ).run(adminId, adminEmail, now, now);
+      }
+    }
   }
 
-  async findUserById(id: string): Promise<UserProfile | null> {
-    if (this.provider === 'supabase') {
-      const { data, error } = await this.getSupa()
-        .from('users')
-        .select('id, name, email, role, created_at')
-        .eq('id', id)
-        .maybeSingle();
-      if (error) throw new Error(error.message);
-      if (!data) return null;
-      return {
-        id: String(data.id),
-        name: String(data.name),
-        email: String(data.email),
-        role: data.role as UserRole,
-        createdAt: String(data.created_at),
-      };
+  private async ensureOptionalEnvAdminSupabase(): Promise<void> {
+    const sb = this.getSupa();
+    const now = new Date().toISOString();
+    const defaultSettings = [
+      { key: 'allowTeacherRegistration', value: 'true', updated_at: now },
+      { key: 'requireTeacherApproval', value: 'true', updated_at: now },
+      { key: 'defaultMaxTabSwitches', value: '3', updated_at: now },
+      { key: 'allowPublicPractice', value: 'true', updated_at: now },
+    ];
+    await sb.from('platform_settings').upsert(defaultSettings, { onConflict: 'key', ignoreDuplicates: true });
+
+    const adminEmail = stripWrappingQuotes(process.env.ADMIN_EMAIL).trim().toLowerCase();
+    const adminPassword = stripWrappingQuotes(process.env.ADMIN_PASSWORD);
+    if (adminEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) && adminPassword.length >= 8) {
+      const { data: existing } = await sb.from('users').select('id').eq('email', adminEmail).maybeSingle();
+      if (!existing) {
+        const adminId = `usr_admin_${crypto.randomUUID().slice(0, 8)}`;
+        await sb.from('users').insert({
+          id: adminId,
+          name: 'Platform Administrator',
+          email: adminEmail,
+          password_hash: hashPassword(adminPassword),
+          role: 'admin',
+          institution: 'ExamAI Administration',
+          account_status: 'active',
+          created_at: now,
+          updated_at: now,
+        });
+        await sb.from('profiles').upsert(
+          {
+            id: adminId,
+            full_name: 'Platform Administrator',
+            email: adminEmail,
+            role: 'admin',
+            institution: 'ExamAI Administration',
+            account_status: 'active',
+            created_at: now,
+            updated_at: now,
+          },
+          { onConflict: 'id' }
+        );
+      }
     }
-    const row = this.getSql()
-      .prepare('SELECT id, name, email, role, created_at FROM users WHERE id = ?')
-      .get(id);
-    if (!row) return null;
+  }
+
+  private mapTeacherProfileRow(tp: Record<string, unknown> | null | undefined): TeacherProfileInfo | null {
+    if (!tp) return null;
+    return {
+      userId: String(tp.user_id),
+      subject: String(tp.subject || ''),
+      institution: String(tp.institution || ''),
+      bio: String(tp.bio || ''),
+      approvalStatus: (tp.approval_status as TeacherApprovalStatus) || 'pending',
+      approvedBy: tp.approved_by ? String(tp.approved_by) : null,
+      approvedAt: tp.approved_at ? String(tp.approved_at) : null,
+      rejectionReason: String(tp.rejection_reason || ''),
+      createdAt: String(tp.created_at),
+      updatedAt: String(tp.updated_at || tp.created_at),
+    };
+  }
+
+  private mapUserRowToProfile(row: Record<string, unknown>, teacherProfile?: Record<string, unknown> | null): UserProfile {
     return {
       id: String(row.id),
       name: String(row.name),
       email: String(row.email),
       role: row.role as UserRole,
+      avatarUrl: String(row.avatar_url || ''),
+      institution: String(row.institution || ''),
+      accountStatus: (row.account_status as AccountStatus) || 'active',
+      lastLoginAt: row.last_login_at ? String(row.last_login_at) : null,
       createdAt: String(row.created_at),
+      teacherProfile: teacherProfile ? this.mapTeacherProfileRow(teacherProfile) : null,
     };
   }
 
-  async createUser(user: StoredUserRow): Promise<void> {
+  // =========================================================================
+  // USERS
+  // =========================================================================
+  async findUserByEmail(email: string): Promise<StoredUserRow | null> {
+    const cleanEmail = email.trim().toLowerCase();
     if (this.provider === 'supabase') {
-      const { error } = await this.getSupa().from('users').insert(user);
+      const { data, error } = await this.getSupa()
+        .from('users')
+        .select('*')
+        .eq('email', cleanEmail)
+        .maybeSingle();
       if (error) throw new Error(error.message);
+      return (data as StoredUserRow | null) ?? null;
+    }
+    const row = this.getSql()
+      .prepare('SELECT * FROM users WHERE email = ?')
+      .get(cleanEmail) as StoredUserRow | undefined;
+    return row ?? null;
+  }
+
+  async findUserById(id: string): Promise<UserProfile | null> {
+    if (this.provider === 'supabase') {
+      const sb = this.getSupa();
+      const { data, error } = await sb.from('users').select('*').eq('id', id).maybeSingle();
+      if (error) throw new Error(error.message);
+      if (!data) return null;
+      let tp: Record<string, unknown> | null = null;
+      if (data.role === 'teacher') {
+        const { data: tpRow } = await sb.from('teacher_profiles').select('*').eq('user_id', id).maybeSingle();
+        tp = (tpRow as Record<string, unknown> | null) ?? null;
+      }
+      return this.mapUserRowToProfile(data as Record<string, unknown>, tp);
+    }
+    const db = this.getSql();
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!row) return null;
+    const tp =
+      row.role === 'teacher'
+        ? db.prepare('SELECT * FROM teacher_profiles WHERE user_id = ?').get(id) ?? null
+        : null;
+    return this.mapUserRowToProfile(row, tp);
+  }
+
+  async touchUserLastLogin(userId: string): Promise<void> {
+    const now = new Date().toISOString();
+    if (this.provider === 'supabase') {
+      const sb = this.getSupa();
+      await sb.from('users').update({ last_login_at: now, updated_at: now }).eq('id', userId);
+      await sb.from('profiles').update({ last_login_at: now, updated_at: now }).eq('id', userId);
       return;
     }
-    this.getSql()
-      .prepare('INSERT INTO users (id, name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(user.id, user.name, user.email, user.password_hash, user.role, user.created_at);
+    const db = this.getSql();
+    db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').run(now, now, userId);
+    db.prepare('UPDATE profiles SET last_login_at = ?, updated_at = ? WHERE id = ?').run(now, now, userId);
+  }
+
+  async createUser(
+    user: StoredUserRow,
+    teacherExtras?: { subject?: string; bio?: string; approvalStatus?: TeacherApprovalStatus; approvedBy?: string | null }
+  ): Promise<void> {
+    const now = user.created_at || new Date().toISOString();
+    const institution = user.institution || '';
+    const avatarUrl = user.avatar_url || '';
+    const accountStatus: AccountStatus = user.account_status || 'active';
+
+    if (this.provider === 'supabase') {
+      const sb = this.getSupa();
+      const { error } = await sb.from('users').insert({
+        id: user.id,
+        auth_user_id: user.auth_user_id || null,
+        name: user.name,
+        email: user.email,
+        password_hash: user.password_hash,
+        role: user.role,
+        avatar_url: avatarUrl,
+        institution,
+        account_status: accountStatus,
+        created_at: now,
+        updated_at: now,
+      });
+      if (error) throw new Error(error.message);
+
+      await sb.from('profiles').upsert(
+        {
+          id: user.id,
+          auth_user_id: user.auth_user_id || null,
+          full_name: user.name,
+          email: user.email,
+          role: user.role,
+          avatar_url: avatarUrl,
+          institution,
+          account_status: accountStatus,
+          created_at: now,
+          updated_at: now,
+        },
+        { onConflict: 'id' }
+      );
+
+      if (user.role === 'teacher') {
+        const approvalStatus = teacherExtras?.approvalStatus || 'pending';
+        await sb.from('teacher_profiles').upsert(
+          {
+            id: `tp_${user.id}`,
+            user_id: user.id,
+            subject: teacherExtras?.subject || '',
+            institution,
+            bio: teacherExtras?.bio || '',
+            approval_status: approvalStatus,
+            approved_by: teacherExtras?.approvedBy || null,
+            approved_at: approvalStatus === 'approved' ? now : null,
+            rejection_reason: '',
+            created_at: now,
+            updated_at: now,
+          },
+          { onConflict: 'user_id' }
+        );
+      }
+      return;
+    }
+
+    const db = this.getSql();
+    db.prepare(
+      `INSERT INTO users (id, auth_user_id, name, email, password_hash, role, avatar_url, institution, account_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(user.id, user.auth_user_id || null, user.name, user.email, user.password_hash, user.role, avatarUrl, institution, accountStatus, now, now);
+
+    db.prepare(
+      `INSERT OR IGNORE INTO profiles (id, auth_user_id, full_name, email, role, avatar_url, institution, account_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(user.id, user.auth_user_id || null, user.name, user.email, user.role, avatarUrl, institution, accountStatus, now, now);
+
+    if (user.role === 'teacher') {
+      const approvalStatus = teacherExtras?.approvalStatus || 'pending';
+      db.prepare(
+        `INSERT OR IGNORE INTO teacher_profiles (id, user_id, subject, institution, bio, approval_status, approved_by, approved_at, rejection_reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`
+      ).run(
+        `tp_${user.id}`,
+        user.id,
+        teacherExtras?.subject || '',
+        institution,
+        teacherExtras?.bio || '',
+        approvalStatus,
+        teacherExtras?.approvedBy || null,
+        approvalStatus === 'approved' ? now : null,
+        now,
+        now
+      );
+    }
   }
 
   async listStudents(): Promise<Array<{ id: string; name: string; email: string; created_at: string }>> {
@@ -1172,40 +1716,34 @@ class ExamDataStore {
         .from('users')
         .select('id, name, email, created_at')
         .eq('role', 'student')
+        .eq('account_status', 'active')
         .order('name', { ascending: true });
       if (error) throw new Error(error.message);
       return (data || []) as Array<{ id: string; name: string; email: string; created_at: string }>;
     }
     return this.getSql()
-      .prepare("SELECT id, name, email, created_at FROM users WHERE role = 'student' ORDER BY name ASC")
+      .prepare("SELECT id, name, email, created_at FROM users WHERE role = 'student' AND account_status = 'active' ORDER BY name ASC")
       .all() as Array<{ id: string; name: string; email: string; created_at: string }>;
   }
 
   async listAllUsers(): Promise<UserProfile[]> {
     if (this.provider === 'supabase') {
-      const { data, error } = await this.getSupa()
-        .from('users')
-        .select('id, name, email, role, created_at')
-        .order('created_at', { ascending: false });
+      const sb = this.getSupa();
+      const [{ data, error }, { data: tpRows }] = await Promise.all([
+        sb.from('users').select('*').order('created_at', { ascending: false }),
+        sb.from('teacher_profiles').select('*'),
+      ]);
       if (error) throw new Error(error.message);
-      return (data || []).map((u) => ({
-        id: String(u.id),
-        name: String(u.name),
-        email: String(u.email),
-        role: u.role as UserRole,
-        createdAt: String(u.created_at),
-      }));
+      const tpMap = new Map((tpRows || []).map((tp) => [String(tp.user_id), tp as Record<string, unknown>]));
+      return (data || []).map((u) =>
+        this.mapUserRowToProfile(u as Record<string, unknown>, tpMap.get(String(u.id)) ?? null)
+      );
     }
-    const rows = this.getSql()
-      .prepare('SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC')
-      .all();
-    return rows.map((u) => ({
-      id: String(u.id),
-      name: String(u.name),
-      email: String(u.email),
-      role: u.role as UserRole,
-      createdAt: String(u.created_at),
-    }));
+    const db = this.getSql();
+    const rows = db.prepare('SELECT * FROM users ORDER BY created_at DESC').all();
+    const tpRows = db.prepare('SELECT * FROM teacher_profiles').all();
+    const tpMap = new Map(tpRows.map((tp) => [String(tp.user_id), tp]));
+    return rows.map((u) => this.mapUserRowToProfile(u, tpMap.get(String(u.id)) ?? null));
   }
 
   // =========================================================================
@@ -1248,23 +1786,15 @@ class ExamDataStore {
     }
     const row = this.getSql()
       .prepare(
-        `SELECT u.id, u.name, u.email, u.role, u.created_at, s.expires_at
+        `SELECT s.user_id, s.expires_at
          FROM sessions s
-         JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ?`
       )
       .get(tokenHash);
     if (!row) return null;
-    return {
-      user: {
-        id: String(row.id),
-        name: String(row.name),
-        email: String(row.email),
-        role: row.role as UserRole,
-        createdAt: String(row.created_at),
-      },
-      expiresAt: String(row.expires_at),
-    };
+    const user = await this.findUserById(String(row.user_id));
+    if (!user) return null;
+    return { user, expiresAt: String(row.expires_at) };
   }
 
   async deleteSessionByTokenHash(tokenHash: string): Promise<void> {
@@ -1955,38 +2485,62 @@ class ExamDataStore {
       exam: StoredExamRow;
       attempt: StoredAttemptRow | null;
       result: Record<string, unknown> | null;
+      assignmentInfo: {
+        assignmentId: string;
+        classId: string | null;
+        className: string | null;
+        startTime: string | null;
+        endTime: string | null;
+        attemptLimit: number;
+        lifecycleStatus: ReturnType<typeof computeAssignmentLifecycleStatus>;
+      } | null;
     }>
   > {
     if (this.provider === 'supabase') {
       const sb = this.getSupa();
-      const { data: exams, error } = await sb
-        .from('exams')
-        .select('*')
-        .eq('status', 'published')
-        .order('created_at', { ascending: false });
+      const [{ data: exams, error }, { data: memberships }] = await Promise.all([
+        sb.from('exams').select('*').eq('status', 'published').order('created_at', { ascending: false }),
+        sb.from('class_members').select('class_id').eq('student_id', studentId).eq('status', 'active'),
+      ]);
       if (error) throw new Error(error.message);
       if (!exams || exams.length === 0) return [];
 
+      const activeClassIds = (memberships || []).map((m) => String(m.class_id));
       const { data: assignments } = await sb
         .from('exam_assignments')
-        .select('exam_id')
-        .eq('student_id', studentId);
-      const assignedIds = new Set((assignments || []).map((a) => String(a.exam_id)));
+        .select('*');
 
-      const visibleExams = exams.filter((e) => Boolean(e.assign_all) || assignedIds.has(String(e.id)));
+      const relevantAssignments = (assignments || []).filter(
+        (a) =>
+          (a.student_id && String(a.student_id) === studentId) ||
+          (a.class_id && activeClassIds.includes(String(a.class_id)))
+      );
+      const assignByExam = new Map<string, Record<string, unknown>>();
+      for (const a of relevantAssignments) {
+        const eid = String(a.exam_id);
+        if (!assignByExam.has(eid)) assignByExam.set(eid, a as Record<string, unknown>);
+      }
+
+      const visibleExams = exams.filter((e) => Boolean(e.assign_all) || assignByExam.has(String(e.id)));
       if (visibleExams.length === 0) return [];
 
       const teacherIds = Array.from(new Set(visibleExams.map((e) => String(e.teacher_id))));
       const examIds = visibleExams.map((e) => String(e.id));
+      const classIds = Array.from(
+        new Set(relevantAssignments.map((a) => (a.class_id ? String(a.class_id) : '')).filter(Boolean))
+      );
 
-      const [{ data: teachers }, { data: questions }, { data: attempts }, { data: results }] = await Promise.all([
-        sb.from('users').select('id, name').in('id', teacherIds),
-        sb.from('questions').select('exam_id').in('exam_id', examIds),
-        sb.from('exam_attempts').select('*').eq('student_id', studentId).in('exam_id', examIds),
-        sb.from('results').select('*').eq('student_id', studentId).in('exam_id', examIds),
-      ]);
+      const [{ data: teachers }, { data: questions }, { data: attempts }, { data: results }, { data: classes }] =
+        await Promise.all([
+          sb.from('users').select('id, name').in('id', teacherIds),
+          sb.from('questions').select('exam_id').in('exam_id', examIds),
+          sb.from('exam_attempts').select('*').eq('student_id', studentId).in('exam_id', examIds),
+          sb.from('results').select('*').eq('student_id', studentId).in('exam_id', examIds),
+          classIds.length > 0 ? sb.from('classes').select('id, name').in('id', classIds) : Promise.resolve({ data: [] }),
+        ]);
 
       const teacherMap = new Map((teachers || []).map((t) => [String(t.id), String(t.name)]));
+      const classMap = new Map((classes || []).map((c) => [String(c.id), String(c.name)]));
       const qCountMap = new Map<string, number>();
       for (const q of questions || []) {
         const eid = String(q.exam_id);
@@ -1997,6 +2551,10 @@ class ExamDataStore {
 
       return visibleExams.map((e) => {
         const att = attMap.get(String(e.id)) || null;
+        const asg = assignByExam.get(String(e.id)) || null;
+        const startTime = asg?.start_time ? String(asg.start_time) : null;
+        const endTime = asg?.end_time ? String(asg.end_time) : e.deadline_at ? String(e.deadline_at) : null;
+        const classId = asg?.class_id ? String(asg.class_id) : null;
         return {
           exam: this.mapExamRow(e, {
             teacher_name: teacherMap.get(String(e.teacher_id)) || 'Instructor',
@@ -2004,6 +2562,20 @@ class ExamDataStore {
           }),
           attempt: att,
           result: att ? resMap.get(att.id) || null : null,
+          assignmentInfo: {
+            assignmentId: asg ? String(asg.id) : `open_${e.id}`,
+            classId,
+            className: classId ? classMap.get(classId) || 'Enrolled Class' : null,
+            startTime,
+            endTime,
+            attemptLimit: asg?.attempt_limit ? Number(asg.attempt_limit) : 1,
+            lifecycleStatus: computeAssignmentLifecycleStatus({
+              startTime,
+              endTime,
+              deadlineAt: e.deadline_at ? String(e.deadline_at) : null,
+              attemptStatus: att?.status ?? null,
+            }),
+          },
         };
       });
     }
@@ -2011,15 +2583,17 @@ class ExamDataStore {
     const db = this.getSql();
     const examRows = db
       .prepare(
-        `SELECT e.*, u.name as teacher_name,
+        `SELECT DISTINCT e.*, u.name as teacher_name,
           (SELECT COUNT(*) FROM questions q WHERE q.exam_id = e.id) as question_count
          FROM exams e
          JOIN users u ON u.id = e.teacher_id
-         LEFT JOIN exam_assignments ea ON ea.exam_id = e.id AND ea.student_id = ?
-         WHERE e.status = 'published' AND (e.assign_all = 1 OR ea.student_id IS NOT NULL)
+         LEFT JOIN exam_assignments ea ON ea.exam_id = e.id
+         LEFT JOIN class_members cm ON cm.class_id = ea.class_id AND cm.student_id = ? AND cm.status = 'active'
+         WHERE e.status = 'published'
+           AND (e.assign_all = 1 OR ea.student_id = ? OR cm.student_id IS NOT NULL)
          ORDER BY e.created_at DESC`
       )
-      .all(studentId);
+      .all(studentId, studentId);
 
     const out = [];
     for (const e of examRows) {
@@ -2031,10 +2605,40 @@ class ExamDataStore {
         result =
           db.prepare('SELECT * FROM results WHERE attempt_id = ?').get(String(attempt.id)) ?? null;
       }
+
+      const asg = db
+        .prepare(
+          `SELECT ea.*, c.name as class_name
+           FROM exam_assignments ea
+           LEFT JOIN classes c ON c.id = ea.class_id
+           LEFT JOIN class_members cm ON cm.class_id = ea.class_id AND cm.student_id = ? AND cm.status = 'active'
+           WHERE ea.exam_id = ? AND (ea.student_id = ? OR cm.student_id IS NOT NULL)
+           LIMIT 1`
+        )
+        .get(studentId, String(e.id), studentId) as Record<string, unknown> | undefined;
+
+      const startTime = asg?.start_time ? String(asg.start_time) : null;
+      const endTime = asg?.end_time ? String(asg.end_time) : e.deadline_at ? String(e.deadline_at) : null;
+      const classId = asg?.class_id ? String(asg.class_id) : null;
+
       out.push({
         exam: this.mapExamRow(e),
         attempt: attempt ?? null,
         result,
+        assignmentInfo: {
+          assignmentId: asg ? String(asg.id) : `open_${e.id}`,
+          classId,
+          className: asg?.class_name ? String(asg.class_name) : null,
+          startTime,
+          endTime,
+          attemptLimit: asg?.attempt_limit ? Number(asg.attempt_limit) : 1,
+          lifecycleStatus: computeAssignmentLifecycleStatus({
+            startTime,
+            endTime,
+            deadlineAt: e.deadline_at ? String(e.deadline_at) : null,
+            attemptStatus: attempt?.status ?? null,
+          }),
+        },
       });
     }
     return out;
@@ -2118,17 +2722,42 @@ class ExamDataStore {
 
   async isStudentAssigned(examId: string, studentId: string): Promise<boolean> {
     if (this.provider === 'supabase') {
-      const { data } = await this.getSupa()
+      const sb = this.getSupa();
+      const { data: direct } = await sb
         .from('exam_assignments')
         .select('id')
         .eq('exam_id', examId)
         .eq('student_id', studentId)
         .maybeSingle();
-      return Boolean(data);
+      if (direct) return true;
+
+      const { data: classAsgs } = await sb
+        .from('exam_assignments')
+        .select('class_id')
+        .eq('exam_id', examId)
+        .not('class_id', 'is', null);
+      const classIds = (classAsgs || []).map((a) => String(a.class_id)).filter(Boolean);
+      if (classIds.length === 0) return false;
+
+      const { data: member } = await sb
+        .from('class_members')
+        .select('id')
+        .eq('student_id', studentId)
+        .eq('status', 'active')
+        .in('class_id', classIds)
+        .limit(1)
+        .maybeSingle();
+      return Boolean(member);
     }
     const row = this.getSql()
-      .prepare('SELECT id FROM exam_assignments WHERE exam_id = ? AND student_id = ?')
-      .get(examId, studentId);
+      .prepare(
+        `SELECT ea.id
+         FROM exam_assignments ea
+         LEFT JOIN class_members cm ON cm.class_id = ea.class_id AND cm.student_id = ? AND cm.status = 'active'
+         WHERE ea.exam_id = ? AND (ea.student_id = ? OR cm.student_id IS NOT NULL)
+         LIMIT 1`
+      )
+      .get(studentId, examId, studentId);
     return Boolean(row);
   }
 
@@ -2152,6 +2781,10 @@ class ExamDataStore {
     maxTabSwitches: number;
     assignAll: boolean;
     assignedStudentIds: string[];
+    assignedClassIds?: string[];
+    startTime?: string | null;
+    endTime?: string | null;
+    attemptLimit?: number;
     questions: QuizQuestion[];
     createdAt: string;
   }): Promise<void> {
@@ -2168,6 +2801,7 @@ class ExamDataStore {
         bank_question_id: null,
         question_type: qType,
         difficulty: q.difficulty || 'Medium',
+        topic: String(q.topic || input.subject || 'General').trim(),
         prompt: String(q.prompt).trim(),
         correct_answer: String(q.correctAnswer || '').trim(),
         explanation: String(q.explanation || '').trim(),
@@ -2195,15 +2829,38 @@ class ExamDataStore {
       });
     });
 
-    const assignRows =
-      !input.assignAll && input.assignedStudentIds.length > 0
-        ? input.assignedStudentIds.map((sid) => ({
-            id: `asg_${crypto.randomUUID()}`,
-            exam_id: input.id,
-            student_id: sid,
-            assigned_at: input.createdAt,
-          }))
-        : [];
+    const assignRows: Array<Record<string, unknown>> = [];
+    const attemptLimit = Math.max(1, Number(input.attemptLimit) || 1);
+    if (!input.assignAll) {
+      for (const sid of input.assignedStudentIds) {
+        assignRows.push({
+          id: `asg_${crypto.randomUUID()}`,
+          exam_id: input.id,
+          teacher_id: input.teacherId,
+          class_id: null,
+          student_id: sid,
+          start_time: input.startTime || null,
+          end_time: input.endTime || input.deadlineAt || null,
+          attempt_limit: attemptLimit,
+          status: 'assigned',
+          assigned_at: input.createdAt,
+        });
+      }
+      for (const cid of input.assignedClassIds || []) {
+        assignRows.push({
+          id: `asg_${crypto.randomUUID()}`,
+          exam_id: input.id,
+          teacher_id: input.teacherId,
+          class_id: cid,
+          student_id: null,
+          start_time: input.startTime || null,
+          end_time: input.endTime || input.deadlineAt || null,
+          attempt_limit: attemptLimit,
+          status: 'assigned',
+          assigned_at: input.createdAt,
+        });
+      }
+    }
 
     if (this.provider === 'supabase') {
       const sb = this.getSupa();
@@ -2262,11 +2919,11 @@ class ExamDataStore {
     );
 
     const insertQ = db.prepare(
-      `INSERT INTO questions (id, exam_id, bank_question_id, question_type, difficulty, prompt, correct_answer, explanation, suggested_answer, marking_guidance, marks, question_order)
-       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO questions (id, exam_id, bank_question_id, question_type, difficulty, topic, prompt, correct_answer, explanation, suggested_answer, marking_guidance, marks, question_order)
+       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const q of qRows) {
-      insertQ.run(q.id, q.exam_id, q.question_type, q.difficulty, q.prompt, q.correct_answer, q.explanation, q.suggested_answer, q.marking_guidance, q.marks, q.question_order);
+      insertQ.run(q.id, q.exam_id, q.question_type, q.difficulty, q.topic, q.prompt, q.correct_answer, q.explanation, q.suggested_answer, q.marking_guidance, q.marks, q.question_order);
     }
     const insertOpt = db.prepare(
       `INSERT INTO question_options (id, question_id, bank_question_id, option_text, option_order, is_correct)
@@ -2276,10 +2933,11 @@ class ExamDataStore {
       insertOpt.run(o.id, o.question_id, o.option_text, o.option_order, o.is_correct);
     }
     const insertAssign = db.prepare(
-      'INSERT OR IGNORE INTO exam_assignments (id, exam_id, student_id, assigned_at) VALUES (?, ?, ?, ?)'
+      `INSERT OR IGNORE INTO exam_assignments (id, exam_id, teacher_id, class_id, student_id, start_time, end_time, attempt_limit, status, assigned_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assigned', ?)`
     );
     for (const a of assignRows) {
-      insertAssign.run(a.id, a.exam_id, a.student_id, a.assigned_at);
+      insertAssign.run(a.id, a.exam_id, a.teacher_id, a.class_id, a.student_id, a.start_time, a.end_time, a.attempt_limit, a.assigned_at);
     }
   }
 
@@ -2298,24 +2956,60 @@ class ExamDataStore {
     return Number(res.changes || 0) > 0;
   }
 
-  async updateExamAssignments(examId: string, teacherId: string, assignAll: boolean, studentIds: string[]): Promise<boolean> {
+  async updateExamAssignments(
+    examId: string,
+    teacherId: string,
+    assignAll: boolean,
+    studentIds: string[],
+    classIds: string[] = [],
+    windowOpts?: { startTime?: string | null; endTime?: string | null; attemptLimit?: number }
+  ): Promise<boolean> {
     const exam = await this.findExamById(examId);
     if (!exam || exam.teacher_id !== teacherId) return false;
 
     const now = new Date().toISOString();
+    const attemptLimit = Math.max(1, Number(windowOpts?.attemptLimit) || 1);
+    const startTime = windowOpts?.startTime || null;
+    const endTime = windowOpts?.endTime || exam.deadline_at || null;
+    const rows: Array<Record<string, unknown>> = [];
+
+    if (!assignAll) {
+      for (const sid of studentIds) {
+        rows.push({
+          id: `asg_${crypto.randomUUID()}`,
+          exam_id: examId,
+          teacher_id: teacherId,
+          class_id: null,
+          student_id: sid,
+          start_time: startTime,
+          end_time: endTime,
+          attempt_limit: attemptLimit,
+          status: 'assigned',
+          assigned_at: now,
+        });
+      }
+      for (const cid of classIds) {
+        rows.push({
+          id: `asg_${crypto.randomUUID()}`,
+          exam_id: examId,
+          teacher_id: teacherId,
+          class_id: cid,
+          student_id: null,
+          start_time: startTime,
+          end_time: endTime,
+          attempt_limit: attemptLimit,
+          status: 'assigned',
+          assigned_at: now,
+        });
+      }
+    }
+
     if (this.provider === 'supabase') {
       const sb = this.getSupa();
       await sb.from('exams').update({ assign_all: assignAll ? 1 : 0 }).eq('id', examId);
       await sb.from('exam_assignments').delete().eq('exam_id', examId);
-      if (!assignAll && studentIds.length > 0) {
-        await sb.from('exam_assignments').insert(
-          studentIds.map((sid) => ({
-            id: `asg_${crypto.randomUUID()}`,
-            exam_id: examId,
-            student_id: sid,
-            assigned_at: now,
-          }))
-        );
+      if (rows.length > 0) {
+        await sb.from('exam_assignments').insert(rows);
       }
       return true;
     }
@@ -2323,12 +3017,13 @@ class ExamDataStore {
     const db = this.getSql();
     db.prepare('UPDATE exams SET assign_all = ? WHERE id = ?').run(assignAll ? 1 : 0, examId);
     db.prepare('DELETE FROM exam_assignments WHERE exam_id = ?').run(examId);
-    if (!assignAll && studentIds.length > 0) {
+    if (rows.length > 0) {
       const insertAssign = db.prepare(
-        'INSERT OR IGNORE INTO exam_assignments (id, exam_id, student_id, assigned_at) VALUES (?, ?, ?, ?)'
+        `INSERT OR IGNORE INTO exam_assignments (id, exam_id, teacher_id, class_id, student_id, start_time, end_time, attempt_limit, status, assigned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assigned', ?)`
       );
-      for (const sid of studentIds) {
-        insertAssign.run(`asg_${crypto.randomUUID()}`, examId, sid, now);
+      for (const a of rows) {
+        insertAssign.run(a.id, a.exam_id, a.teacher_id, a.class_id, a.student_id, a.start_time, a.end_time, a.attempt_limit, a.assigned_at);
       }
     }
     return true;
@@ -2358,7 +3053,10 @@ class ExamDataStore {
         .eq('exam_id', examId)
         .order('question_order', { ascending: true });
       if (error) throw new Error(error.message);
-      const qList = (qs || []) as StoredQuestionRow[];
+      const qList = (qs || []).map((q) => ({
+        ...(q as StoredQuestionRow),
+        topic: String((q as { topic?: string }).topic || ''),
+      }));
       if (!includeOptions || qList.length === 0) return qList;
 
       const qIds = qList.map((q) => String(q.id));
@@ -2385,6 +3083,7 @@ class ExamDataStore {
       exam_id: String(q.exam_id),
       question_type: q.question_type as QuestionType,
       difficulty: q.difficulty as Difficulty,
+      topic: String(q.topic || ''),
       prompt: String(q.prompt),
       correct_answer: String(q.correct_answer || ''),
       explanation: String(q.explanation || ''),
@@ -2802,6 +3501,7 @@ class ExamDataStore {
             questionId: q.id,
             questionType: q.question_type,
             difficulty: q.difficulty,
+            topic: q.topic || '',
             prompt: q.prompt,
             options: q.options || [],
             marks: q.marks,
@@ -2857,6 +3557,7 @@ class ExamDataStore {
         questionId: q.id,
         questionType: q.question_type,
         difficulty: q.difficulty,
+        topic: q.topic || '',
         prompt: q.prompt,
         options: q.options || [],
         marks: q.marks,

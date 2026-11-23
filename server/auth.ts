@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
 import type { NextFunction, Request, Response } from 'express';
-import { store } from './store.ts';
 import type { UserProfile, UserRole } from '../src/types/index.ts';
+import { domainStore } from './domainStore.ts';
+import { store } from './store.ts';
 
 const SESSION_COOKIE_NAME = 'exampilot_session';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -17,7 +19,7 @@ function getSessionSecret(): string {
   return cachedFallbackSecret;
 }
 
-function hashToken(rawToken: string): string {
+export function hashToken(rawToken: string): string {
   return crypto.createHmac('sha256', getSessionSecret()).update(rawToken).digest('hex');
 }
 
@@ -100,25 +102,39 @@ export function extractRawToken(req: Request): { token: string | null; source: '
   return { token: null, source: null };
 }
 
-function resolveWorkspaceRoleFromRequest(req: AuthenticatedRequest): UserRole {
-  const headerMode =
-    typeof req.headers['x-examai-mode'] === 'string'
-      ? req.headers['x-examai-mode'].trim().toLowerCase()
-      : '';
-  if (headerMode === 'teacher' || headerMode === 'student') {
-    return headerMode;
-  }
+async function verifySupabaseJwtIfConfigured(token: string): Promise<UserProfile | null> {
+  const pub = store.getSupabasePublicConfig();
+  if (!pub.url || !pub.anonKey) return null;
+  // Heuristic: JWTs always have 3 dot-separated segments
+  if (token.split('.').length !== 3) return null;
 
-  const queryMode =
-    typeof req.query?.mode === 'string' ? req.query.mode.trim().toLowerCase() : '';
-  if (queryMode === 'teacher' || queryMode === 'student') {
-    return queryMode;
-  }
+  try {
+    const sbAuth = createClient(pub.url, pub.anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data, error } = await sbAuth.auth.getUser(token);
+    if (error || !data?.user?.email) return null;
 
-  if (req.path.startsWith('/teacher')) {
-    return 'teacher';
+    const meta = (data.user.user_metadata || {}) as Record<string, unknown>;
+    const rawRole = typeof meta.role === 'string' ? meta.role.toLowerCase() : 'student';
+    const requestedRole: UserRole = rawRole === 'teacher' ? 'teacher' : 'student';
+    const synced = await domainStore.syncSupabaseUser({
+      authUserId: data.user.id,
+      email: data.user.email,
+      fullName: String(meta.full_name || meta.name || data.user.email.split('@')[0]),
+      requestedRole,
+      institution: typeof meta.institution === 'string' ? meta.institution : '',
+      subject: typeof meta.subject === 'string' ? meta.subject : '',
+      bio: typeof meta.bio === 'string' ? meta.bio : '',
+    });
+
+    if ('user' in synced) {
+      return synced.user;
+    }
+    return null;
+  } catch {
+    return null;
   }
-  return 'student';
 }
 
 export async function attachOptionalUser(
@@ -127,54 +143,35 @@ export async function attachOptionalUser(
   next: NextFunction
 ): Promise<void> {
   try {
-    const requestedRole = resolveWorkspaceRoleFromRequest(req);
     const { token, source } = extractRawToken(req);
-
-    if (token && source) {
-      const tokenHash = hashToken(token);
-      const sessionRow = await store.findSessionWithUser(tokenHash);
-      if (sessionRow) {
-        if (Date.parse(sessionRow.expiresAt) < Date.now()) {
-          await store.deleteSessionByTokenHash(tokenHash);
-        } else if (
-          !req.headers['x-examai-mode'] ||
-          sessionRow.user.role === requestedRole
-        ) {
-          req.user = sessionRow.user;
-          req.authSource = source;
-          next();
-          return;
-        }
-      }
-    }
-
-    // Direct workspace mode while login/register is disabled
-    const workspaceUserId =
-      requestedRole === 'teacher' ? 'usr_teacher_demo' : 'usr_student_demo';
-    const workspaceUser = await store.findUserById(workspaceUserId);
-
-    if (workspaceUser) {
-      req.user = workspaceUser;
+    if (!token || !source) {
       next();
       return;
     }
 
-    req.user =
-      requestedRole === 'teacher'
-        ? {
-            id: 'usr_teacher_demo',
-            name: 'Dr. Elena Vance',
-            email: 'teacher@exampilot.edu',
-            role: 'teacher',
-            createdAt: new Date().toISOString(),
-          }
-        : {
-            id: 'usr_student_demo',
-            name: 'Maya Lin',
-            email: 'student@exampilot.edu',
-            role: 'student',
-            createdAt: new Date().toISOString(),
-          };
+    const tokenHash = hashToken(token);
+    const sessionRow = await store.findSessionWithUser(tokenHash);
+    if (sessionRow) {
+      if (Date.parse(sessionRow.expiresAt) < Date.now()) {
+        await store.deleteSessionByTokenHash(tokenHash);
+      } else {
+        req.user = sessionRow.user;
+        req.authSource = source;
+        next();
+        return;
+      }
+    }
+
+    if (source === 'bearer') {
+      const sbUser = await verifySupabaseJwtIfConfigured(token);
+      if (sbUser) {
+        req.user = sbUser;
+        req.authSource = 'bearer';
+        next();
+        return;
+      }
+    }
+
     next();
   } catch (err) {
     next(err);
@@ -184,6 +181,13 @@ export async function attachOptionalUser(
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   if (!req.user) {
     res.status(401).json({ error: 'Authentication required. Please log in.' });
+    return;
+  }
+
+  if (req.user.accountStatus && req.user.accountStatus !== 'active') {
+    res.status(403).json({
+      error: `Your account is currently ${req.user.accountStatus}. Contact an administrator for assistance.`,
+    });
     return;
   }
 
@@ -225,4 +229,42 @@ export function requireRole(role: UserRole) {
     }
     next();
   };
+}
+
+export function requireAnyRole(roles: UserRole[]) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    if (!roles.includes(req.user.role)) {
+      res.status(403).json({ error: 'Access denied for your account role.' });
+      return;
+    }
+    next();
+  };
+}
+
+export function requireApprovedTeacher(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    res.status(401).json({ error: 'Authentication required.' });
+    return;
+  }
+  if (req.user.role !== 'teacher') {
+    res.status(403).json({ error: 'Access denied. Teacher account required.' });
+    return;
+  }
+  const approvalStatus = req.user.teacherProfile?.approvalStatus || 'pending';
+  if (approvalStatus !== 'approved') {
+    res.status(403).json({
+      error:
+        approvalStatus === 'rejected'
+          ? 'Your teacher verification request was rejected. Contact an administrator for details.'
+          : 'Your teacher account is pending administrator verification.',
+      approvalStatus,
+      rejectionReason: req.user.teacherProfile?.rejectionReason || '',
+    });
+    return;
+  }
+  next();
 }

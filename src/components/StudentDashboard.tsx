@@ -1,26 +1,36 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
-  ArrowLeftRight,
   Award,
   BarChart3,
   BookOpen,
   CheckCircle2,
   Clock,
   FileText,
+  GraduationCap,
   History,
   Home,
   LayoutDashboard,
   Loader2,
   Lock,
+  LogOut,
   Play,
+  Plus,
   ShieldAlert,
   Trash2,
+  TrendingUp,
   Upload,
+  User as UserIcon,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../lib/api';
-import type { OfficialExamSummary, PracticeQuizRecord } from '../types/index';
+import type {
+  ClassRecord,
+  OfficialExamSummary,
+  PracticeQuizRecord,
+  StudentProgressSummary,
+} from '../types/index';
 import { DocumentStudio } from './DocumentStudio';
 import { BrandMark } from './BrandMark';
 
@@ -35,9 +45,11 @@ interface StudentDashboardData {
     practiceQuizzesCount: number;
     availableExamsCount: number;
     completedExamsCount: number;
+    classesCount?: number;
     avgExamPercentage: number | null;
     avgPracticePercentage: number | null;
   };
+  classes?: ClassRecord[];
   practiceQuizzes: PracticeQuizRecord[];
   availableExams: OfficialExamSummary[];
   completedExams: OfficialExamSummary[];
@@ -50,21 +62,32 @@ interface StudentDashboardData {
   }>;
 }
 
-type StudentTab = 'overview' | 'upload' | 'practice' | 'exams' | 'history';
+type StudentTab = 'overview' | 'classes' | 'upload' | 'practice' | 'exams' | 'progress' | 'history';
 
 export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [tab, setTab] = useState<StudentTab>('overview');
   const [data, setData] = useState<StudentDashboardData | null>(null);
+  const [classes, setClasses] = useState<ClassRecord[]>([]);
+  const [progress, setProgress] = useState<StudentProgressSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [progressLoading, setProgressLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [joinCode, setJoinCode] = useState('');
+  const [joiningClass, setJoiningClass] = useState(false);
+  const [classNotice, setClassNotice] = useState<string | null>(null);
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get<StudentDashboardData>('/api/student/dashboard');
-      setData(res);
+      const [dashRes, clsRes] = await Promise.all([
+        api.get<StudentDashboardData>('/api/student/dashboard'),
+        api.get<{ classes: ClassRecord[] }>('/api/student/classes'),
+      ]);
+      setData(dashRes);
+      setClasses(clsRes.classes || dashRes.classes || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load student dashboard.');
     } finally {
@@ -72,9 +95,27 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
     }
   }, []);
 
+  const loadProgress = useCallback(async () => {
+    setProgressLoading(true);
+    try {
+      const res = await api.get<{ progress: StudentProgressSummary }>('/api/student/progress');
+      setProgress(res.progress);
+    } catch {
+      // Handled gracefully in UI
+    } finally {
+      setProgressLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    if (tab === 'progress') {
+      void loadProgress();
+    }
+  }, [tab, loadProgress]);
 
   const handleDeleteQuiz = async (quizId: string) => {
     try {
@@ -85,12 +126,51 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
     }
   };
 
+  const handleJoinClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinCode.trim()) return;
+    setJoiningClass(true);
+    setClassNotice(null);
+    setError(null);
+    try {
+      const res = await api.post<{ classRecord: ClassRecord }>('/api/student/classes/join', {
+        enrollmentCode: joinCode.trim(),
+      });
+      setJoinCode('');
+      setClassNotice(`Enrolled in ${res.classRecord.name} (${res.classRecord.subject}).`);
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to join class with that enrollment code.');
+    } finally {
+      setJoiningClass(false);
+    }
+  };
+
+  const handleLeaveClass = async (cls: ClassRecord) => {
+    setClassNotice(null);
+    setError(null);
+    try {
+      await api.delete(`/api/student/classes/${cls.id}/leave`);
+      setClassNotice(`Left ${cls.name}.`);
+      await loadDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to leave class.');
+    }
+  };
+
+  const handleSignOut = async () => {
+    await logout();
+    onNavigate('/login');
+  };
+
   const navItems: Array<{ id: StudentTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    { id: 'classes', label: 'My Classes', icon: Users },
     { id: 'upload', label: 'Upload & AI Studio', icon: Upload },
-    { id: 'practice', label: 'My Practice Quizzes', icon: BookOpen },
+    { id: 'practice', label: 'Practice Quizzes', icon: BookOpen },
     { id: 'exams', label: 'Official Exams', icon: Clock },
-    { id: 'history', label: 'History & Analytics', icon: History },
+    { id: 'progress', label: 'My Progress', icon: TrendingUp },
+    { id: 'history', label: 'History & Results', icon: History },
   ];
 
   return (
@@ -107,7 +187,7 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
             >
               <BrandMark variant="dark" size="sm" />
             </button>
-            <span className="text-[11px] font-medium text-[#DFC58E]">Study Mode</span>
+            <span className="text-[11px] font-medium text-[#DFC58E]">Student</span>
           </div>
 
           <nav className="p-3 flex lg:flex-col gap-1 overflow-x-auto">
@@ -133,18 +213,18 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
           </nav>
         </div>
 
-        <div className="hidden lg:block p-4 border-t border-[#303030] space-y-2.5">
-          <div>
-            <div className="text-sm font-semibold text-white truncate">{user.name}</div>
-            <div className="text-xs text-[#B5B0A6] truncate">Student Workspace</div>
+        <div className="hidden lg:block p-4 border-t border-[#303030] space-y-2">
+          <div className="pb-1">
+            <div className="text-sm font-semibold text-white truncate">{user?.name || 'Student'}</div>
+            <div className="text-xs text-[#B5B0A6] truncate">{user?.email || 'Student Account'}</div>
           </div>
           <button
             type="button"
-            onClick={() => onNavigate('/teacher')}
+            onClick={() => onNavigate('/profile')}
             className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-[#303030] hover:bg-[#3D3D3D] text-xs font-semibold text-white transition-colors"
           >
-            <ArrowLeftRight className="w-3.5 h-3.5 text-[#DFC58E]" />
-            Switch to Teacher Mode
+            <UserIcon className="w-3.5 h-3.5 text-[#DFC58E]" />
+            Account Profile
           </button>
           <button
             type="button"
@@ -152,7 +232,15 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
             className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-[#D6D0C4] hover:text-white hover:bg-[#303030]/60 transition-colors"
           >
             <Home className="w-3.5 h-3.5" />
-            Back to Home
+            Home
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSignOut()}
+            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-[#E8A5A5] hover:text-white hover:bg-[#C64B4B]/25 transition-colors"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Logout
           </button>
         </div>
       </aside>
@@ -162,10 +250,10 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
         <header className="bg-white border-b border-[#E3DED3] px-6 h-16 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-lg font-display font-bold text-[#252525] truncate">
-              Welcome back, {user?.name}
+              Welcome back, {user?.name || 'Student'}
             </h1>
           </div>
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
             {data?.activeExamAttempt ? (
               <button
                 type="button"
@@ -186,12 +274,19 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
             )}
             <button
               type="button"
-              onClick={() => onNavigate('/teacher')}
-              aria-label="Switch to Teacher Mode"
-              className="lg:hidden inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E3DED3] text-xs font-semibold text-[#252525]"
+              onClick={() => onNavigate('/profile')}
+              aria-label="Account profile"
+              className="lg:hidden inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-[#E3DED3] text-xs font-semibold text-[#252525]"
             >
-              <ArrowLeftRight className="w-3.5 h-3.5" />
-              Teacher
+              <UserIcon className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSignOut()}
+              aria-label="Logout"
+              className="lg:hidden inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-[#E3DED3] text-xs font-semibold text-[#C64B4B]"
+            >
+              <LogOut className="w-3.5 h-3.5" />
             </button>
           </div>
         </header>
@@ -223,24 +318,26 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
               </button>
             </div>
           )}
+
+          {error && (
+            <div className="p-4 rounded-xl bg-[#C64B4B]/10 border border-[#C64B4B]/35 text-sm text-[#982E2E]">
+              {error}
+            </div>
+          )}
+
           {loading && !data ? (
             <div className="py-16 flex items-center justify-center">
               <Loader2 className="w-7 h-7 text-[#66543A] animate-spin" />
-            </div>
-          ) : error ? (
-            <div className="p-4 rounded-xl bg-[#C64B4B]/10 border border-[#C64B4B]/35 text-sm text-[#982E2E]">
-              {error}
             </div>
           ) : data ? (
             <>
               {tab === 'overview' && (
                 <div className="space-y-8">
-                  {/* KPI Grid */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                     <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
-                      <div className="text-xs font-medium text-[#77736C]">My Documents</div>
+                      <div className="text-xs font-medium text-[#77736C]">Enrolled Classes</div>
                       <div className="font-mono text-2xl font-bold text-[#252525] tabular-nums mt-1">
-                        {data.stats.documentsCount}
+                        {classes.length}
                       </div>
                     </div>
                     <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
@@ -263,7 +360,6 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
                     </div>
                   </div>
 
-                  {/* Available Official Exams & Practice Quick Actions */}
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     <div className="lg:col-span-7 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
                       <div className="flex items-center justify-between">
@@ -279,37 +375,45 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
 
                       {data.availableExams.length === 0 ? (
                         <p className="text-sm text-[#77736C] py-4">
-                          No pending official exams right now. Generate a practice quiz from your notes!
+                          No pending official exams right now. Join a class with an enrollment code or generate a practice quiz from your notes.
                         </p>
                       ) : (
-                        <div className="space-y-3">
-                          {data.availableExams.map((ex) => (
-                            <div
-                              key={ex.id}
-                              className="p-4 rounded-xl bg-[#F5F1E8]/70 border border-[#E3DED3] flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                            >
-                              <div>
-                                <div className="text-sm font-bold text-[#252525]">{ex.title}</div>
-                                <div className="text-xs text-[#77736C] mt-0.5 tabular-nums">
-                                  {ex.subject} · {ex.durationMinutes} min · {ex.totalMarks} marks ·{' '}
-                                  {ex.questionCount} questions
-                                </div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => onNavigate(`/exam/${ex.id}`)}
-                                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-xs font-semibold whitespace-nowrap shrink-0"
+                        <div className="divide-y divide-[#E3DED3]">
+                          {data.availableExams.map((ex) => {
+                            const expired = ex.assignmentInfo?.lifecycleStatus === 'Expired';
+                            return (
+                              <div
+                                key={ex.id}
+                                className="py-3.5 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                               >
-                                <Play className="w-3.5 h-3.5" />
-                                {ex.studentAttempt?.status === 'in_progress' ? 'Resume Exam' : 'Start Exam'}
-                              </button>
-                            </div>
-                          ))}
+                                <div>
+                                  <div className="text-sm font-bold text-[#252525]">{ex.title}</div>
+                                  <div className="text-xs text-[#77736C] mt-0.5 tabular-nums">
+                                    {ex.subject} · {ex.durationMinutes} min · {ex.totalMarks} marks ·{' '}
+                                    {ex.questionCount} questions
+                                    {ex.assignmentInfo?.className ? ` · Class: ${ex.assignmentInfo.className}` : ''}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={expired}
+                                  onClick={() => onNavigate(`/exam/${ex.id}`)}
+                                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] disabled:opacity-45 text-[#171717] text-xs font-semibold whitespace-nowrap shrink-0"
+                                >
+                                  <Play className="w-3.5 h-3.5" />
+                                  {expired
+                                    ? 'Window Closed'
+                                    : ex.studentAttempt?.status === 'in_progress'
+                                      ? 'Resume Exam'
+                                      : 'Start Exam'}
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
 
-                    {/* Recent Activity */}
                     <div className="lg:col-span-5 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
                       <div className="flex items-center gap-2">
                         <Activity className="w-4 h-4 text-[#4476A8]" />
@@ -333,43 +437,155 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
                     </div>
                   </div>
 
-                  {/* Quick Practice Quizzes */}
-                  <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h2 className="text-base font-display font-bold text-[#252525]">My Practice Quizzes</h2>
+                  {/* Quick Join Class + Practice Quizzes */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <form
+                      onSubmit={handleJoinClass}
+                      className="lg:col-span-5 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4"
+                    >
+                      <div className="flex items-center gap-2">
+                        <GraduationCap className="w-4 h-4 text-[#66543A]" />
+                        <h2 className="text-base font-display font-bold text-[#252525]">Join a Class</h2>
+                      </div>
+                      <p className="text-xs text-[#77736C]">
+                        Enter the enrollment code shared by your teacher (e.g. EXAM-CS301A) to access class-assigned exams.
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={joinCode}
+                          onChange={(e) => setJoinCode(e.target.value)}
+                          placeholder="EXAM-XXXXXX"
+                          className="flex-1 px-3 py-2 text-xs font-mono uppercase bg-[#F5F1E8]/70 border border-[#E3DED3] rounded-lg focus:bg-white focus:border-[#C9A45C] outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={joiningClass || !joinCode.trim()}
+                          className="px-4 py-2 rounded-lg bg-[#171717] hover:bg-[#303030] disabled:opacity-50 text-white text-xs font-semibold whitespace-nowrap"
+                        >
+                          {joiningClass ? 'Joining...' : 'Join'}
+                        </button>
+                      </div>
+                      {classNotice && (
+                        <div className="text-xs font-medium text-[#25845D]">{classNotice}</div>
+                      )}
+                    </form>
+
+                    <div className="lg:col-span-7 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h2 className="text-base font-display font-bold text-[#252525]">My Practice Quizzes</h2>
+                        <button
+                          type="button"
+                          onClick={() => setTab('upload')}
+                          className="text-xs font-semibold text-[#4476A8] hover:underline"
+                        >
+                          + Generate New Quiz
+                        </button>
+                      </div>
+                      {data.practiceQuizzes.length === 0 ? (
+                        <p className="text-sm text-[#77736C]">
+                          Upload a PDF or DOCX study guide to create your first practice quiz.
+                        </p>
+                      ) : (
+                        <div className="divide-y divide-[#E3DED3]">
+                          {data.practiceQuizzes.slice(0, 4).map((q) => (
+                            <div
+                              key={q.id}
+                              className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-4"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-sm font-bold text-[#252525] truncate">{q.title}</div>
+                                <div className="text-xs text-[#77736C] mt-0.5 tabular-nums">
+                                  {q.difficulty} · {q.questions.length} questions
+                                  {q.lastAttempt ? ` · Last: ${q.lastAttempt.percentage}%` : ''}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={Boolean(data.activeExamAttempt)}
+                                onClick={() => onNavigate(`/practice/${q.id}`)}
+                                className="px-3.5 py-2 rounded-lg bg-[#171717] hover:bg-[#303030] disabled:opacity-40 text-white text-xs font-semibold whitespace-nowrap shrink-0"
+                              >
+                                {data.activeExamAttempt ? 'Locked' : 'Practice'}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {tab === 'classes' && (
+                <div className="space-y-6">
+                  <form
+                    onSubmit={handleJoinClass}
+                    className="bg-white border border-[#E3DED3] rounded-xl p-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4"
+                  >
+                    <div className="space-y-1">
+                      <h2 className="text-lg font-display font-bold text-[#252525]">Enroll in a Class</h2>
+                      <p className="text-xs text-[#77736C]">
+                        Ask your instructor for their class enrollment code to receive assigned exams and track cohort progress.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 sm:min-w-[320px]">
+                      <input
+                        type="text"
+                        value={joinCode}
+                        onChange={(e) => setJoinCode(e.target.value)}
+                        placeholder="Enter class code (e.g. EXAM-CS301A)"
+                        className="flex-1 px-3.5 py-2.5 text-sm font-mono uppercase bg-[#F5F1E8]/70 border border-[#E3DED3] rounded-lg focus:bg-white focus:border-[#C9A45C] outline-none"
+                      />
                       <button
-                        type="button"
-                        onClick={() => setTab('upload')}
-                        className="text-xs font-semibold text-[#4476A8] hover:underline"
+                        type="submit"
+                        disabled={joiningClass || !joinCode.trim()}
+                        className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] disabled:opacity-50 text-[#171717] text-xs font-semibold whitespace-nowrap"
                       >
-                        + Generate New Quiz
+                        <Plus className="w-4 h-4" />
+                        Join Class
                       </button>
                     </div>
-                    {data.practiceQuizzes.length === 0 ? (
-                      <p className="text-sm text-[#77736C]">
-                        Upload a PDF or DOCX study guide to create your first practice quiz.
+                  </form>
+
+                  {classNotice && (
+                    <div className="p-3.5 rounded-xl bg-[#25845D]/10 border border-[#25845D]/30 text-xs font-medium text-[#19593E]">
+                      {classNotice}
+                    </div>
+                  )}
+
+                  <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
+                    <h2 className="text-base font-display font-bold text-[#252525]">
+                      My Enrolled Classes ({classes.length})
+                    </h2>
+                    {classes.length === 0 ? (
+                      <p className="text-sm text-[#77736C] py-6">
+                        You are not enrolled in any classes yet. Join a class using an enrollment code above.
                       </p>
                     ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {data.practiceQuizzes.slice(0, 4).map((q) => (
+                      <div className="divide-y divide-[#E3DED3]">
+                        {classes.map((cls) => (
                           <div
-                            key={q.id}
-                            className="p-4 rounded-xl bg-[#F5F1E8]/70 border border-[#E3DED3] flex items-center justify-between gap-4"
+                            key={cls.id}
+                            className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                           >
-                            <div className="min-w-0">
-                              <div className="text-sm font-bold text-[#252525] truncate">{q.title}</div>
-                              <div className="text-xs text-[#77736C] mt-0.5 tabular-nums">
-                                {q.difficulty} · {q.questions.length} questions
-                                {q.lastAttempt ? ` · Last: ${q.lastAttempt.percentage}%` : ''}
+                            <div className="space-y-1">
+                              <div className="text-sm font-bold text-[#252525]">
+                                {cls.name} · <span className="text-[#66543A]">{cls.subject}</span>
                               </div>
+                              <div className="text-xs text-[#77736C] tabular-nums">
+                                Instructor: {cls.teacherName || 'Teacher'} · Code:{' '}
+                                <span className="font-mono font-semibold text-[#252525]">{cls.enrollmentCode}</span> ·{' '}
+                                {cls.memberCount} students · {cls.assignedExamCount || 0} assigned exams
+                              </div>
+                              {cls.description && <p className="text-xs text-[#77736C]">{cls.description}</p>}
                             </div>
                             <button
                               type="button"
-                              disabled={Boolean(data.activeExamAttempt)}
-                              onClick={() => onNavigate(`/practice/${q.id}`)}
-                              className="px-3.5 py-2 rounded-lg bg-[#171717] hover:bg-[#303030] disabled:opacity-40 text-white text-xs font-semibold whitespace-nowrap shrink-0"
+                              onClick={() => void handleLeaveClass(cls)}
+                              className="px-3.5 py-2 rounded-lg border border-[#E3DED3] hover:bg-[#EFEBE2] text-xs font-semibold text-[#77736C] hover:text-[#C64B4B] shrink-0"
                             >
-                              {data.activeExamAttempt ? 'Locked' : 'Practice'}
+                              Leave Class
                             </button>
                           </div>
                         ))}
@@ -427,105 +643,257 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
                   </div>
                 ) : (
                   <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-lg font-display font-bold text-[#252525]">My Saved Practice Quizzes</h2>
-                      <p className="text-sm text-[#77736C]">
-                        Self-paced quizzes generated from your uploaded study materials.
-                      </p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-lg font-display font-bold text-[#252525]">My Saved Practice Quizzes</h2>
+                        <p className="text-sm text-[#77736C]">
+                          Self-paced quizzes generated from your uploaded study materials.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setTab('upload')}
+                        className="px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-xs font-semibold"
+                      >
+                        New Practice Quiz
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setTab('upload')}
-                      className="px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-xs font-semibold"
-                    >
-                      New Practice Quiz
-                    </button>
-                  </div>
 
-                  {data.practiceQuizzes.length === 0 ? (
-                    <div className="py-10 text-center space-y-3">
-                      <FileText className="w-8 h-8 text-[#77736C] mx-auto" />
-                      <p className="text-sm text-[#77736C]">No practice quizzes saved yet.</p>
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-[#E3DED3]">
-                      {data.practiceQuizzes.map((q) => (
-                        <div key={q.id} className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                          <div>
-                            <div className="text-sm font-bold text-[#252525]">{q.title}</div>
-                            <div className="text-xs text-[#77736C] mt-0.5 tabular-nums">
-                              Topic: {q.topic} · {q.difficulty} · {q.questions.length} questions
-                              {q.lastAttempt && ` · Last Attempt: ${q.lastAttempt.score}/${q.lastAttempt.totalMarks} (${q.lastAttempt.percentage}%)`}
+                    {data.practiceQuizzes.length === 0 ? (
+                      <div className="py-10 text-center space-y-3">
+                        <FileText className="w-8 h-8 text-[#77736C] mx-auto" />
+                        <p className="text-sm text-[#77736C]">No practice quizzes saved yet.</p>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-[#E3DED3]">
+                        {data.practiceQuizzes.map((q) => (
+                          <div key={q.id} className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div>
+                              <div className="text-sm font-bold text-[#252525]">{q.title}</div>
+                              <div className="text-xs text-[#77736C] mt-0.5 tabular-nums">
+                                Topic: {q.topic} · {q.difficulty} · {q.questions.length} questions
+                                {q.lastAttempt &&
+                                  ` · Last Attempt: ${q.lastAttempt.score}/${q.lastAttempt.totalMarks} (${q.lastAttempt.percentage}%)`}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => onNavigate(`/practice/${q.id}`)}
+                                className="px-4 py-2 rounded-lg bg-[#171717] hover:bg-[#303030] text-white text-xs font-semibold"
+                              >
+                                {q.lastAttempt ? 'Retake Quiz' : 'Start Practice'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteQuiz(q.id)}
+                                aria-label={`Delete practice quiz ${q.title}`}
+                                className="p-2 rounded-lg border border-[#E3DED3] text-[#77736C] hover:text-[#C64B4B]"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => onNavigate(`/practice/${q.id}`)}
-                              className="px-4 py-2 rounded-lg bg-[#171717] hover:bg-[#303030] text-white text-xs font-semibold"
-                            >
-                              {q.lastAttempt ? 'Retake Quiz' : 'Start Practice'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteQuiz(q.id)}
-                              aria-label={`Delete practice quiz ${q.title}`}
-                              className="p-2 rounded-lg border border-[#E3DED3] text-[#77736C] hover:text-[#C64B4B]"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        ))}
                       </div>
                     )}
                   </div>
                 ))}
 
               {tab === 'exams' && (
-                <div className="space-y-6">
-                  <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
-                    <h2 className="text-lg font-display font-bold text-[#252525]">Available Official Examinations</h2>
-                    {data.availableExams.length === 0 ? (
-                      <p className="text-sm text-[#77736C]">No official exams currently open.</p>
-                    ) : (
-                      <div className="space-y-3">
-                        {data.availableExams.map((ex) => (
+                <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
+                  <h2 className="text-lg font-display font-bold text-[#252525]">Official Examinations</h2>
+                  {data.availableExams.length === 0 ? (
+                    <p className="text-sm text-[#77736C]">No official exams currently assigned.</p>
+                  ) : (
+                    <div className="divide-y divide-[#E3DED3]">
+                      {data.availableExams.map((ex) => {
+                        const info = ex.assignmentInfo;
+                        const lifecycle = info?.lifecycleStatus || 'Assigned';
+                        const isExpired = lifecycle === 'Expired';
+                        return (
                           <div
                             key={ex.id}
-                            className="p-5 rounded-xl bg-[#F5F1E8]/70 border border-[#E3DED3] flex flex-col md:flex-row md:items-center justify-between gap-4"
+                            className="py-4 first:pt-0 last:pb-0 flex flex-col md:flex-row md:items-center justify-between gap-4"
                           >
                             <div className="space-y-1">
-                              <div className="text-base font-bold text-[#252525]">{ex.title}</div>
+                              <div className="flex flex-wrap items-center gap-2.5">
+                                <span className="text-base font-bold text-[#252525]">{ex.title}</span>
+                                <span
+                                  className={`text-[11px] font-semibold uppercase tracking-wide ${
+                                    isExpired
+                                      ? 'text-[#C64B4B]'
+                                      : lifecycle === 'Started'
+                                        ? 'text-[#B77B25]'
+                                        : 'text-[#4476A8]'
+                                  }`}
+                                >
+                                  {lifecycle}
+                                </span>
+                              </div>
                               <div className="text-xs text-[#77736C] tabular-nums">
                                 {ex.subject} · Instructor: {ex.teacherName} · {ex.durationMinutes} min ·{' '}
                                 {ex.totalMarks} total marks (Pass: {ex.passingMarks})
+                                {info?.className ? ` · Class: ${info.className}` : ''}
                               </div>
+                              {(info?.startTime || info?.endTime || ex.deadlineAt) && (
+                                <div className="text-[11px] text-[#77736C] tabular-nums">
+                                  {info?.startTime ? `Opens: ${new Date(info.startTime).toLocaleString()} · ` : ''}
+                                  {info?.endTime
+                                    ? `Closes: ${new Date(info.endTime).toLocaleString()}`
+                                    : ex.deadlineAt
+                                      ? `Deadline: ${new Date(ex.deadlineAt).toLocaleString()}`
+                                      : ''}
+                                </div>
+                              )}
                               <p className="text-xs text-[#77736C]">{ex.instructions}</p>
                             </div>
                             <button
                               type="button"
+                              disabled={isExpired}
                               onClick={() => onNavigate(`/exam/${ex.id}`)}
-                              className="px-5 py-2.5 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-xs font-semibold whitespace-nowrap shrink-0"
+                              className="px-5 py-2.5 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] disabled:opacity-45 text-[#171717] text-xs font-semibold whitespace-nowrap shrink-0"
                             >
-                              {ex.studentAttempt?.status === 'in_progress' ? 'Resume Attempt' : 'Start Official Exam'}
+                              {isExpired
+                                ? 'Window Closed'
+                                : ex.studentAttempt?.status === 'in_progress'
+                                  ? 'Resume Attempt'
+                                  : 'Start Official Exam'}
                             </button>
                           </div>
-                        ))}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {tab === 'progress' && (
+                <div className="space-y-6">
+                  {progressLoading && !progress ? (
+                    <div className="py-12 flex justify-center">
+                      <Loader2 className="w-6 h-6 text-[#66543A] animate-spin" />
+                    </div>
+                  ) : progress ? (
+                    <>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs text-[#77736C]">Official Average</div>
+                          <div className="font-mono text-2xl font-bold text-[#252525] tabular-nums mt-1">
+                            {progress.averageScore !== null ? `${progress.averageScore}%` : '—'}
+                          </div>
+                        </div>
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs text-[#77736C]">Highest Score</div>
+                          <div className="font-mono text-2xl font-bold text-[#25845D] tabular-nums mt-1">
+                            {progress.highestScore !== null ? `${progress.highestScore}%` : '—'}
+                          </div>
+                        </div>
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs text-[#77736C]">Pass Rate</div>
+                          <div className="font-mono text-2xl font-bold text-[#4476A8] tabular-nums mt-1">
+                            {progress.passRate !== null ? `${progress.passRate}%` : '—'}
+                          </div>
+                        </div>
+                        <div className="bg-white border border-[#E3DED3] rounded-xl p-5">
+                          <div className="text-xs text-[#77736C]">Accuracy Split</div>
+                          <div className="font-mono text-sm font-bold text-[#252525] tabular-nums mt-2">
+                            {progress.totalCorrect}✓ · {progress.totalIncorrect}✕ · {progress.totalUnanswered}—
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        <div className="lg:col-span-6 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
+                          <h2 className="text-base font-display font-bold text-[#252525]">Topic Accuracy Breakdown</h2>
+                          {progress.topicBreakdown.length === 0 ? (
+                            <p className="text-sm text-[#77736C]">
+                              Complete at least one exam or practice quiz to compute topic-level accuracy.
+                            </p>
+                          ) : (
+                            <div className="space-y-3">
+                              {progress.topicBreakdown.map((t) => (
+                                <div key={`${t.subject}-${t.topic}`} className="space-y-1">
+                                  <div className="flex items-center justify-between text-xs">
+                                    <span className="font-semibold text-[#252525]">
+                                      {t.topic} <span className="text-[#77736C]">({t.subject})</span>
+                                    </span>
+                                    <span className="font-mono tabular-nums text-[#252525]">
+                                      {t.accuracyPercent}% ({t.marksEarned}/{t.marksPossible})
+                                    </span>
+                                  </div>
+                                  <div className="h-2 bg-[#EFEBE2] rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full ${
+                                        t.accuracyPercent >= 75
+                                          ? 'bg-[#25845D]'
+                                          : t.accuracyPercent >= 60
+                                            ? 'bg-[#C9A45C]'
+                                            : 'bg-[#C64B4B]'
+                                      }`}
+                                      style={{ width: `${Math.min(100, Math.max(4, t.accuracyPercent))}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="lg:col-span-6 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
+                          <h2 className="text-base font-display font-bold text-[#252525]">
+                            Strong vs. Weak Topics &amp; Recommendations
+                          </h2>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                            <div className="space-y-1.5">
+                              <div className="font-bold text-[#25845D]">Strong Areas (≥75%)</div>
+                              {progress.strongTopics.length === 0 ? (
+                                <p className="text-[#77736C]">No strong topic threshold reached yet.</p>
+                              ) : (
+                                progress.strongTopics.map((st) => (
+                                  <div key={st.topic} className="flex justify-between py-1 border-b border-[#E3DED3]">
+                                    <span className="font-medium text-[#252525] truncate pr-2">{st.topic}</span>
+                                    <span className="font-mono tabular-nums text-[#25845D]">{st.accuracyPercent}%</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                            <div className="space-y-1.5">
+                              <div className="font-bold text-[#C64B4B]">Focus Areas (&lt;65%)</div>
+                              {progress.weakTopics.length === 0 ? (
+                                <p className="text-[#77736C]">No weak topics flagged.</p>
+                              ) : (
+                                progress.weakTopics.map((wt) => (
+                                  <div key={wt.topic} className="flex justify-between py-1 border-b border-[#E3DED3]">
+                                    <span className="font-medium text-[#252525] truncate pr-2">{wt.topic}</span>
+                                    <span className="font-mono tabular-nums text-[#C64B4B]">{wt.accuracyPercent}%</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="pt-3 border-t border-[#E3DED3] space-y-2">
+                            <div className="text-xs font-bold text-[#66543A]">Actionable Next Steps</div>
+                            <ul className="space-y-1.5 text-xs text-[#252525] list-disc pl-4">
+                              {progress.suggestions.map((s, idx) => (
+                                <li key={idx}>{s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               )}
 
               {tab === 'history' && (
                 <div className="space-y-6">
-                  {/* Performance Analytics */}
                   <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-5">
                     <div className="flex items-center gap-2">
                       <BarChart3 className="w-5 h-5 text-[#66543A]" />
-                      <h2 className="text-lg font-display font-bold text-[#252525]">Performance Analytics</h2>
+                      <h2 className="text-lg font-display font-bold text-[#252525]">Assessment Overview</h2>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 sm:divide-x divide-y sm:divide-y-0 divide-[#E3DED3] border-y border-[#E3DED3] py-4">
@@ -572,7 +940,6 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
                     )}
                   </div>
 
-                  {/* Completed Exam History Table */}
                   <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-4">
                     <div className="flex items-center gap-2">
                       <Award className="w-5 h-5 text-[#4476A8]" />

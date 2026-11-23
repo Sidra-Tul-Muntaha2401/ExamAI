@@ -1,8 +1,6 @@
-import type { UserRole } from '../types/index';
-
 class ApiClient {
   private token: string | null = null;
-  private workspaceMode: UserRole = 'student';
+  private unauthorizedHandler: (() => void) | null = null;
 
   setToken(token: string | null): void {
     this.token = token;
@@ -12,18 +10,13 @@ class ApiClient {
     return this.token;
   }
 
-  setWorkspaceMode(mode: UserRole): void {
-    this.workspaceMode = mode;
-  }
-
-  getWorkspaceMode(): UserRole {
-    return this.workspaceMode;
+  onUnauthorized(handler: (() => void) | null): void {
+    this.unauthorizedHandler = handler;
   }
 
   async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers || {});
     headers.set('X-Requested-With', 'ExamAI');
-    headers.set('X-ExamAI-Mode', this.workspaceMode);
 
     if (this.token) {
       headers.set('Authorization', `Bearer ${this.token}`);
@@ -44,9 +37,21 @@ class ApiClient {
     const data = isJson ? await res.json() : await res.text();
 
     if (!res.ok) {
-      if (res.status === 401 && path !== '/api/auth/login' && path !== '/api/auth/register') {
+      const isAuthPath =
+        path.startsWith('/api/auth/login') ||
+        path.startsWith('/api/auth/register') ||
+        path.startsWith('/api/auth/claim-admin') ||
+        path.startsWith('/api/auth/demo-login') ||
+        path.startsWith('/api/auth/forgot-password') ||
+        path.startsWith('/api/auth/reset-password');
+
+      if (res.status === 401 && !isAuthPath) {
         this.setToken(null);
+        if (this.unauthorizedHandler) {
+          this.unauthorizedHandler();
+        }
       }
+
       const errorMsg =
         typeof data === 'object' && data && 'error' in data
           ? String((data as { error: unknown }).error)

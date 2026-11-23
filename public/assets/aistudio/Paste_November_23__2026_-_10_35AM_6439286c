@@ -1,0 +1,1337 @@
+# EXAMAI — COMPLETE AUTHENTICATION, STUDENT PROGRESS, TEACHER MANAGEMENT & SUPABASE BACKEND
+
+Act as a senior full-stack engineer, SaaS architect, database engineer, Supabase expert, security engineer, UI/UX designer, and QA engineer.
+
+You are upgrading my existing ExamAI application:
+
+Live application:
+[https://exam-ai-phi-three.vercel.app/](https://exam-ai-phi-three.vercel.app/)
+
+I want to transform my existing application into a multi-user examination and learning platform with:
+
+1. Student registration and login
+2. Student profiles
+3. Student progress tracking
+4. Exam history and analytics
+5. Teacher registration and login
+6. Teacher dashboard
+7. Class and student management
+8. Exam assignment and performance monitoring
+9. Admin dashboard
+10. Centralized database storage using Supabase
+11. Automatic saving of all relevant application data to Supabase
+12. Secure access control and role-based permissions
+
+## CRITICAL: PRESERVE MY EXISTING PROJECT
+
+This is an existing, functioning website.
+
+Do NOT rebuild the application from scratch.
+
+Do NOT remove, overwrite, simplify, or damage working features.
+
+Do NOT replace the existing examination engine unless there is a genuine technical issue that cannot be fixed safely.
+
+Preserve:
+
+- Existing UI and design identity
+- Existing pages and routes
+- Existing exam functionality
+- Existing question data
+- Existing AI features
+- Existing scoring logic
+- Existing components
+- Existing integrations
+- Existing deployment configuration
+- Existing working code
+
+First inspect the complete codebase and understand its architecture.
+
+Implement new features by extending the existing system.
+
+If a component is already functional, reuse it instead of recreating it.
+
+Make incremental, backward-compatible modifications.
+
+Do not perform destructive database operations.
+
+Do not delete existing exam questions or user data.
+
+---
+
+# 1. TECHNOLOGY REQUIREMENTS
+
+Use Supabase as the central backend infrastructure.
+
+Supabase should provide:
+
+- Supabase Authentication
+- PostgreSQL database
+- Database relationships
+- Row Level Security (RLS)
+- Persistent storage for relevant application data
+- Secure access policies
+- Real-time functionality only where it is genuinely useful
+
+Retain my existing frontend framework, project architecture, and deployment configuration.
+
+Do not migrate the frontend or replace my stack unnecessarily.
+
+Connect the existing ExamAI application to Supabase.
+
+All persistent data must be saved to Supabase rather than being stored only in temporary frontend state.
+
+Use secure environment variables for Supabase configuration.
+
+Never expose:
+
+- Supabase service role keys
+- Secret API keys
+- Private tokens
+- Database credentials
+
+The Supabase anon/publishable key may be used in the frontend only with correctly configured Row Level Security policies.
+
+---
+
+# 2. USER ROLES
+
+Implement three primary roles:
+
+- STUDENT
+- TEACHER
+- ADMIN
+
+Use a secure role-based access control system.
+
+Each user must have an assigned role.
+
+Users must not be able to change their role by editing frontend data, requests, URLs, browser storage, or database requests.
+
+Role permissions must be enforced on the server and in Supabase policies, not merely by hiding buttons in the frontend.
+
+## Role access
+
+### STUDENT
+
+Can:
+
+- Register
+- Login
+- Logout
+- Manage their own profile
+- Take available exams
+- Practice questions
+- View their own results
+- View their own examination history
+- Track learning progress
+- See topic-wise performance
+- View achievements, if supported
+- View assigned exams
+- View their enrolled classes
+
+Students must not access another student's private results, profiles, or data.
+
+### TEACHER
+
+Can:
+
+- Register
+- Login
+- Manage their teacher profile
+- Create classes
+- Manage their classes
+- Add students to classes
+- Remove students from classes
+- Invite students using a code or invitation link
+- View students enrolled in their classes
+- Assign exams to students or classes
+- Create examinations, if supported by the existing exam system
+- Manage assignments
+- Track student performance
+- View class performance analytics
+- View exam results for students they are authorized to manage
+- Identify students needing additional support
+- Review exam completion status
+
+Teachers must only be able to access their own classes and the students they are authorized to manage.
+
+### ADMIN
+
+Admin has access to a secure administration panel.
+
+Admin can:
+
+- View all registered users
+- View all students
+- View all teachers
+- View all classes
+- View all examinations
+- View all examination attempts
+- View all results
+- View all user activity records permitted by the system
+- Search users
+- Filter users
+- Create users
+- Edit user information
+- Activate or deactivate accounts
+- Suspend accounts when necessary
+- Assign or change user roles
+- Approve or reject teacher accounts
+- Delete accounts when appropriate, using safe data-handling procedures
+- View platform statistics
+- Manage platform-wide settings
+- Monitor the database and application data
+
+Admin must have a dedicated dashboard.
+
+Admin access must be securely restricted.
+
+Never create an insecure public admin registration option.
+
+---
+
+# 3. AUTHENTICATION SYSTEM
+
+Implement a complete authentication system using Supabase Auth.
+
+## Student registration
+
+Registration form should support:
+
+- Full name
+- Email address
+- Password
+- Confirm password, if appropriate
+- Optional profile information
+
+Validation:
+
+- Valid email format
+- Password requirements
+- Required fields
+- Password confirmation
+- Duplicate account handling
+- Clear error messages
+
+Use Supabase Auth for account creation.
+
+After registration:
+
+1. Create the authenticated account.
+2. Create or initialize the user's profile.
+3. Assign the STUDENT role by default.
+4. Save relevant profile information in Supabase.
+5. Handle email verification according to the configured authentication settings.
+6. Redirect the user to the appropriate student dashboard.
+
+A student must never be able to register as ADMIN.
+
+## Teacher registration
+
+Provide a separate teacher registration flow or role-selection flow.
+
+Collect appropriate information:
+
+- Full name
+- Email
+- Password
+- Institution or school, optional
+- Teaching subject, optional
+- Professional information, optional
+
+Teacher registration should initially create a teacher account with:
+
+TEACHER ROLE + PENDING APPROVAL STATUS
+
+If admin approval is enabled:
+
+- Teacher can register.
+- Teacher profile is saved.
+- Admin sees the pending teacher in the admin panel.
+- Admin can approve or reject the application.
+- An approved teacher can access the teacher dashboard.
+- An unapproved teacher cannot access restricted teacher functionality.
+
+Do not allow users to grant themselves approved teacher status.
+
+## Login
+
+Implement secure login for all roles.
+
+Use the same login system where practical.
+
+After authentication, redirect users based on their actual database role:
+
+- Student → Student dashboard
+- Teacher → Teacher dashboard, if approved
+- Admin → Admin dashboard
+
+Do not trust the role stored in frontend local storage.
+
+## Logout
+
+Implement a complete logout flow.
+
+Ensure authenticated sessions are properly terminated.
+
+## Forgot password
+
+Implement password reset using Supabase Auth.
+
+Include:
+
+- Forgot password form
+- Email reset flow
+- Secure reset link
+- New password form
+- Success and failure messages
+
+## Session handling
+
+Implement:
+
+- Secure session management
+- Authentication persistence
+- Session restoration
+- Protected routes
+- Expired session handling
+- Redirect to login when necessary
+
+Do not break the current application for users who are accessing public practice features.
+
+---
+
+# 4. USER PROFILE SYSTEM
+
+Create a user profile system connected to Supabase.
+
+Each user should have a profile containing relevant information such as:
+
+- User ID
+- Full name
+- Email
+- Role
+- Profile image, optional
+- Account creation date
+- Account status
+- Last login, if reliably available
+- Institution, optional
+- Additional role-specific fields
+
+Students can update only allowed personal profile fields.
+
+Teachers can update only allowed teacher profile fields.
+
+Admin can manage user profiles according to permissions.
+
+Do not store passwords in the profile table.
+
+Supabase Auth must manage authentication credentials.
+
+---
+
+# 5. STUDENT DASHBOARD
+
+Create a professional student dashboard.
+
+Reuse existing ExamAI components and styles wherever possible.
+
+The student dashboard should display actual data from Supabase.
+
+## Dashboard overview
+
+Display:
+
+- Welcome message
+- Student name
+- Total exams attempted
+- Total exams completed
+- Average score
+- Highest score
+- Recent examination activity
+- Overall learning progress
+- Assigned examinations
+- Upcoming examinations, if applicable
+- Recent achievements, if implemented
+
+## Progress tracking
+
+Create a meaningful progress-tracking system.
+
+Track:
+
+- Exams attempted
+- Exams completed
+- Total questions attempted
+- Correct answers
+- Incorrect answers
+- Unanswered questions
+- Average score
+- Score improvement over time
+- Subject-wise performance
+- Topic-wise performance
+- Weak topics
+- Strong topics
+- Practice history
+
+Progress must be based on real data stored in Supabase.
+
+Do not fabricate progress or analytics.
+
+## Student examination history
+
+Create a history section containing:
+
+- Exam name
+- Date
+- Score
+- Percentage
+- Completion status
+- Time taken
+- Subject
+- Exam type
+
+Allow users to open their own exam review where the existing system permits it.
+
+Students must never access other students' history.
+
+## Student analytics
+
+Where sufficient data exists, display:
+
+- Performance over time
+- Score trend
+- Subject comparison
+- Topic accuracy
+- Strengths
+- Weaknesses
+- Improvement suggestions
+
+Use charts only when they add value.
+
+Avoid displaying meaningless statistics when a student has insufficient data.
+
+---
+
+# 6. TEACHER DASHBOARD
+
+Create a dedicated teacher portal.
+
+Teacher dashboard should display data belonging to that teacher only.
+
+## Overview cards
+
+Display:
+
+- Total students
+- Total classes
+- Exams assigned
+- Exams completed
+- Pending student attempts
+- Average class performance
+
+All statistics must be calculated from real database records.
+
+## Teacher class management
+
+Allow teachers to:
+
+- Create classes
+- Edit class information
+- View classes
+- Archive classes
+- Generate enrollment codes
+- Manage class membership
+- Add students
+- Remove students
+- View student lists
+
+Each class should have:
+
+- Class name
+- Description
+- Teacher ID
+- Enrollment code
+- Creation date
+- Status
+
+## Student management
+
+Teachers should be able to:
+
+- Search students within their classes
+- View student profiles with appropriate permissions
+- View examination history
+- View student performance
+- Track completion status
+- Identify weak topics
+- Monitor progress over time
+
+Teachers must not have access to unrelated students or classes.
+
+## Exam assignment
+
+If compatible with the existing exam system, allow teachers to:
+
+- Select an existing examination
+- Assign it to a class
+- Assign it to individual students
+- Set a start date
+- Set an end date
+- Set a duration, where supported
+- Configure attempt limits, where supported
+- View assignment status
+
+Track:
+
+- Assigned
+- Started
+- Completed
+- Not attempted
+- Expired
+
+Do not duplicate the existing exam engine.
+
+Integrate assignment functionality into the current examination system.
+
+## Class analytics
+
+Display:
+
+- Class average
+- Highest score
+- Lowest score
+- Completion rate
+- Student ranking, where appropriate
+- Subject performance
+- Topic performance
+- Score distribution
+- Students requiring additional practice
+
+Ensure analytics respect student privacy and teacher permissions.
+
+---
+
+# 7. ADMIN PANEL
+
+Create a secure admin dashboard.
+
+Admin should have a dedicated layout and navigation.
+
+## Admin overview
+
+Display live database statistics:
+
+- Total users
+- Total students
+- Total teachers
+- Pending teacher approvals
+- Active users
+- Total classes
+- Total examinations
+- Total exam attempts
+- Completed examinations
+- Average platform score
+
+These values must be derived from real Supabase data.
+
+Do not use hardcoded statistics.
+
+## User management
+
+Create a user-management section.
+
+Features:
+
+- View users
+- Search by name or email
+- Filter by role
+- Filter by account status
+- View account details
+- Edit user details
+- Activate users
+- Deactivate users
+- Suspend users
+- Change roles with secure authorization
+- Review teacher applications
+
+## Teacher approval
+
+Create a pending teacher approval section.
+
+Admin should be able to:
+
+- View teacher applications
+- View submitted profile information
+- Approve applications
+- Reject applications
+- Change approval status
+
+Approval actions must be recorded securely.
+
+## Student management
+
+Admin can:
+
+- View all students
+- Search students
+- Filter students
+- View student profiles
+- View exam history
+- View progress
+- View enrolled classes
+
+## Examination management
+
+Admin can:
+
+- View all examinations
+- View examination attempts
+- View results
+- View completion status
+- Filter records
+- Review examination statistics
+
+Preserve the existing examination functionality.
+
+## Database overview
+
+Create a useful database-management interface showing application data that admin is authorized to view.
+
+Do not expose sensitive authentication credentials.
+
+Admin should not see users' passwords.
+
+---
+
+# 8. SUPABASE DATABASE ARCHITECTURE
+
+Inspect the existing project and design the database around its current structure.
+
+Do not create duplicate tables if equivalent tables already exist.
+
+Use migrations or safe schema changes.
+
+Create or adapt the following logical entities as needed:
+
+## profiles
+
+- id → references auth.users
+- full_name
+- email
+- role
+- avatar_url
+- institution
+- account_status
+- created_at
+- updated_at
+
+## teacher_profiles
+
+- user_id
+- subject
+- institution
+- approval_status
+- approved_by
+- approved_at
+- additional teacher information
+
+## classes
+
+- id
+- teacher_id
+- name
+- description
+- enrollment_code
+- status
+- created_at
+
+## class_members
+
+- id
+- class_id
+- student_id
+- joined_at
+- status
+
+## exams
+
+Reuse the existing exam data model.
+
+If needed, adapt it to support:
+
+- Creator
+- Exam title
+- Subject
+- Description
+- Duration
+- Total marks
+- Question count
+- Status
+- Visibility
+- Created date
+
+## exam_assignments
+
+- id
+- exam_id
+- teacher_id
+- class_id, optional
+- student_id, optional
+- start_time
+- end_time
+- attempt_limit, if supported
+- status
+- created_at
+
+## exam_attempts
+
+- id
+- exam_id
+- student_id
+- assignment_id, optional
+- started_at
+- submitted_at
+- time_taken
+- score
+- percentage
+- status
+
+## attempt_answers
+
+- id
+- attempt_id
+- question_id
+- selected_answer
+- is_correct
+- marks_awarded
+- answered_at
+
+## exam_integrity_events
+
+Where appropriate:
+
+- id
+- attempt_id
+- student_id
+- event_type
+- event_timestamp
+- event_metadata
+
+## student_progress
+
+Use either a properly calculated view, a summary table, or another reliable approach to track:
+
+- student_id
+- subject
+- topic
+- exams_attempted
+- accuracy
+- average_score
+- updated_at
+
+Use appropriate foreign keys, indexes, constraints, timestamps, and relationships.
+
+Avoid unnecessary duplication.
+
+Avoid storing the same metric in multiple places without a clear reason.
+
+---
+
+# 9. AUTOMATIC DATA SAVING
+
+This is a core requirement.
+
+All relevant data must be automatically saved to Supabase.
+
+I do not want an application where users interact with the frontend but their data disappears when the page is refreshed.
+
+Implement automatic persistence for:
+
+- Registration
+- Profile updates
+- Teacher applications
+- Teacher approval status
+- Class creation
+- Class updates
+- Student enrollment
+- Class membership
+- Exam creation, where supported
+- Exam assignments
+- Exam starts
+- Answer selections
+- Exam submissions
+- Exam scores
+- Exam history
+- Student progress
+- Relevant integrity events
+- Account status changes
+- Relevant admin actions
+
+## Automatic saving behavior
+
+When a student selects an answer:
+
+1. Update the frontend state immediately.
+2. Save the answer to Supabase.
+3. Provide appropriate saving feedback if needed.
+4. Handle failed requests.
+5. Retry safely where appropriate.
+6. Prevent duplicate records.
+7. Preserve the student's answer.
+
+Use reliable persistence patterns.
+
+Do not rely exclusively on localStorage or browser memory.
+
+Local storage may be used as a temporary recovery mechanism only when it does not replace the database as the source of truth.
+
+## Data integrity
+
+Ensure:
+
+- Correct user ID
+- Correct exam ID
+- Correct attempt ID
+- Correct question ID
+- Correct timestamps
+- No duplicate answers for the same question and attempt
+- No duplicate submissions
+- No unauthorized modifications
+
+The database should be the source of truth for authenticated user progress and examination records.
+
+---
+
+# 10. ROW LEVEL SECURITY (RLS)
+
+Implement appropriate Supabase Row Level Security on all sensitive tables.
+
+Security requirements:
+
+## Students
+
+Students can:
+
+- View and update permitted fields of their own profile.
+- View their own progress.
+- View their own exam history.
+- Save their own answers during authorized attempts.
+- Submit their own exams.
+- Access exams they are authorized to attempt.
+- View their own results.
+
+Students cannot:
+
+- View other student records.
+- Modify their own role.
+- Approve themselves as teachers.
+- Access admin data.
+- Modify official scores directly.
+- Modify other students' answers.
+- Access teacher-only records.
+
+## Teachers
+
+Teachers can:
+
+- Manage classes they own.
+- Manage students enrolled in their classes, within permitted operations.
+- Create and manage assignments they own.
+- View results for their assigned students.
+- Access teacher-specific analytics.
+
+Teachers cannot:
+
+- Access another teacher's private classes.
+- Change their own role to admin.
+- Approve their own teacher application.
+- Access unrelated student data.
+- Change official exam scores without an authorized workflow.
+
+## Admin
+
+Admin can access the administrative data necessary for platform management.
+
+Admin privileges must be securely verified.
+
+Do not implement admin security by checking only:
+
+- A frontend variable
+- localStorage
+- A URL parameter
+- A user-editable profile field
+
+Use secure authorization mechanisms and trusted server-side checks.
+
+Test RLS policies thoroughly.
+
+---
+
+# 11. ADMIN DATA SYNCHRONIZATION
+
+Whenever a user performs an action, the relevant data must be stored in Supabase and immediately or reliably reflected in the admin panel.
+
+Examples:
+
+Student registers:
+→ Supabase Auth account created
+→ Profile record created
+→ Admin user list updated
+
+Teacher registers:
+→ Auth account created
+→ Teacher profile saved
+→ Pending approval appears in admin panel
+
+Teacher creates a class:
+→ Class record saved
+→ Teacher dashboard updates
+→ Admin panel updates
+
+Student joins a class:
+→ Class membership saved
+→ Teacher dashboard updates
+→ Admin panel updates
+
+Student attempts an exam:
+→ Attempt saved
+→ Answers saved
+→ Score saved on submission
+→ Student progress updated
+→ Teacher analytics updated, if authorized
+→ Admin analytics updated
+
+Teacher assigns an exam:
+→ Assignment saved
+→ Student dashboard displays assignment
+→ Teacher dashboard displays assignment
+→ Admin panel reflects assignment
+
+Implement reliable data refresh or real-time updates where appropriate.
+
+Do not create unnecessary real-time subscriptions if normal database queries and refresh mechanisms are sufficient.
+
+---
+
+# 12. ADMIN ROLE CREATION — SECURITY REQUIREMENT
+
+Never make admin role assignment available through public registration.
+
+Do not create a public "Register as Admin" button.
+
+Do not allow role escalation from the frontend.
+
+Establish the first admin account through a secure, documented process, such as:
+
+- A trusted server-side bootstrap script
+- A protected administrative procedure
+- A secure database operation performed by the project owner
+
+After the initial admin is established:
+
+- Admin can authorize additional admins through a protected workflow.
+- Admin role changes must be validated on the server.
+- Role-change events should be logged.
+
+Never expose the Supabase service-role key to the browser.
+
+Never use a service-role key in frontend code.
+
+---
+
+# 13. UI NAVIGATION
+
+Preserve the current ExamAI interface wherever it is already good.
+
+Add role-specific navigation without unnecessarily redesigning the existing website.
+
+## Public navigation
+
+- Home
+- Practice
+- About, if already present
+- Login
+- Register
+
+## Student navigation
+
+- Dashboard
+- Practice
+- Exams
+- My Progress
+- Exam History
+- My Classes
+- Profile
+- Logout
+
+## Teacher navigation
+
+- Teacher Dashboard
+- My Classes
+- Students
+- Exams
+- Assignments
+- Analytics
+- Profile
+- Logout
+
+## Admin navigation
+
+- Admin Dashboard
+- Users
+- Students
+- Teachers
+- Teacher Approvals
+- Classes
+- Exams
+- Exam Attempts
+- Results
+- Analytics
+- Settings
+- Logout
+
+Show only the navigation items permitted for the authenticated user's role.
+
+---
+
+# 14. UI/UX REQUIREMENTS
+
+The new authentication and dashboard pages must match the existing ExamAI design identity.
+
+Create a consistent, polished experience for:
+
+- Login
+- Registration
+- Forgot password
+- Student dashboard
+- Teacher dashboard
+- Admin dashboard
+- Class management
+- Student management
+- Exam assignments
+- Progress analytics
+- Profile pages
+
+Requirements:
+
+- Responsive layouts
+- Consistent typography
+- Clean cards
+- Professional tables
+- Useful charts
+- Search
+- Filters
+- Pagination when necessary
+- Loading indicators
+- Empty states
+- Error messages
+- Confirmation dialogs
+- Accessible controls
+
+Do not redesign existing pages unnecessarily.
+
+Reuse existing components and styles.
+
+---
+
+# 15. AUTOMATIC PROGRESS CALCULATION
+
+Create a reliable method for calculating student progress from database records.
+
+Potential metrics:
+
+- Total exams attempted
+- Total exams completed
+- Average score
+- Highest score
+- Total correct answers
+- Total incorrect answers
+- Total unanswered questions
+- Subject accuracy
+- Topic accuracy
+- Improvement trend
+
+Ensure that:
+
+- Scores are calculated consistently.
+- Duplicate attempts are handled correctly.
+- Incomplete attempts are not incorrectly treated as completed exams.
+- Deleted or invalid records do not corrupt analytics.
+- Progress updates after completed exams.
+- Students see only their own progress.
+- Teachers see only authorized students.
+- Admin can see platform-wide statistics.
+
+If insufficient data exists, display a helpful empty state instead of misleading statistics.
+
+---
+
+# 16. SECURITY, PRIVACY & VALIDATION
+
+Implement:
+
+- Authentication checks
+- Role checks
+- Server-side validation
+- RLS
+- Secure API calls
+- Rate limiting where appropriate
+- Protection against unauthorized data access
+- Safe error handling
+- Secure session handling
+
+Do not store unnecessary personal data.
+
+Do not expose private student records to other students.
+
+Do not expose authentication credentials.
+
+Do not trust data coming from the frontend.
+
+Validate every sensitive operation on the server or through properly secured Supabase policies.
+
+---
+
+# 17. IMPLEMENTATION WORKFLOW
+
+Follow this sequence.
+
+### Step 1 — Inspect
+
+Understand the current project.
+
+Identify:
+
+- Existing architecture
+- Existing routes
+- Existing exam system
+- Existing data sources
+- Existing authentication
+- Existing components
+- Existing dependencies
+
+### Step 2 — Plan
+
+Create a detailed implementation plan.
+
+Identify:
+
+- Files that need modification
+- New components required
+- Database tables required
+- Migrations required
+- Authentication flows
+- RLS policies
+- Risks
+
+### Step 3 — Protect
+
+Create a backup or Git checkpoint.
+
+Ensure no destructive changes will occur.
+
+### Step 4 — Supabase setup
+
+Implement the database schema, relationships, migrations, and security policies.
+
+Provide SQL migration files in the project.
+
+Do not silently perform destructive database modifications.
+
+### Step 5 — Authentication
+
+Implement:
+
+- Registration
+- Login
+- Logout
+- Password recovery
+- Session persistence
+- Role-based redirection
+- Protected routes
+
+### Step 6 — Student system
+
+Implement:
+
+- Student profile
+- Student dashboard
+- Progress tracking
+- Exam history
+- Analytics
+
+### Step 7 — Teacher system
+
+Implement:
+
+- Teacher registration
+- Teacher approval
+- Teacher dashboard
+- Class management
+- Student management
+- Exam assignment
+- Analytics
+
+### Step 8 — Admin system
+
+Implement:
+
+- Admin dashboard
+- User management
+- Teacher approval
+- Student management
+- Class management
+- Exam monitoring
+- Results
+- Analytics
+
+### Step 9 — Automatic persistence
+
+Ensure relevant actions are saved to Supabase.
+
+Test data persistence after refreshing and signing back in.
+
+### Step 10 — Security testing
+
+Test authentication, roles, RLS, unauthorized access, and account restrictions.
+
+### Step 11 — Regression testing
+
+Verify that the existing ExamAI functionality still works.
+
+### Step 12 — Deployment
+
+Prepare deployment to the existing hosting environment.
+
+Preserve existing configuration.
+
+Never overwrite production secrets.
+
+Do not deploy destructive changes without verifying them.
+
+---
+
+# 18. ACCEPTANCE CRITERIA
+
+The project is complete only when the following requirements have been implemented and tested, or clearly reported as blocked.
+
+## Authentication
+
+- [ ] Student can register.
+- [ ] Student can log in.
+- [ ] Student can log out.
+- [ ] Student can reset password.
+- [ ] Teacher can register.
+- [ ] Teacher approval works.
+- [ ] Role-based redirects work.
+- [ ] Protected routes work.
+- [ ] Sessions persist correctly.
+
+## Student
+
+- [ ] Student profile exists in Supabase.
+- [ ] Student can take an exam.
+- [ ] Answers persist.
+- [ ] Exam attempts are recorded.
+- [ ] Results are saved.
+- [ ] Exam history is displayed.
+- [ ] Progress is calculated.
+- [ ] Dashboard uses real database data.
+
+## Teacher
+
+- [ ] Teacher can register.
+- [ ] Teacher approval is enforced.
+- [ ] Teacher can create a class.
+- [ ] Teacher can enroll students.
+- [ ] Teacher can view student lists.
+- [ ] Teacher can assign examinations.
+- [ ] Teacher can view student performance.
+- [ ] Teacher can view class analytics.
+
+## Admin
+
+- [ ] Secure admin login.
+- [ ] Admin dashboard displays actual data.
+- [ ] Admin can view users.
+- [ ] Admin can manage students.
+- [ ] Admin can manage teachers.
+- [ ] Admin can approve teachers.
+- [ ] Admin can manage classes.
+- [ ] Admin can view examinations.
+- [ ] Admin can view attempts and results.
+- [ ] Admin can view platform statistics.
+
+## Database
+
+- [ ] Supabase is connected.
+- [ ] Relevant data is automatically saved.
+- [ ] Relationships are correct.
+- [ ] RLS is enabled and tested.
+- [ ] No secret keys are exposed.
+- [ ] Duplicate records are prevented where necessary.
+- [ ] Refreshing the page does not lose saved data.
+
+## Existing application
+
+- [ ] Existing features remain functional.
+- [ ] Existing exam engine remains functional.
+- [ ] Existing AI features remain functional.
+- [ ] Existing routes remain functional.
+- [ ] Existing design is preserved where appropriate.
+- [ ] No unnecessary rewrite was performed.
+
+---
+
+# 19. FINAL REPORT
+
+After implementation, provide:
+
+1. Initial architecture summary
+2. Features already present
+3. Features newly implemented
+4. Database schema created or modified
+5. RLS policies implemented
+6. Authentication flows completed
+7. Student features completed
+8. Teacher features completed
+9. Admin features completed
+10. Files changed
+11. Environment variables required
+12. Supabase setup instructions
+13. SQL migration instructions, if required
+14. Tests performed
+15. Test results
+16. Security issues identified
+17. Remaining limitations
+18. Deployment instructions
+19. Deployment status
+
+Do not claim anything is complete if it has not been implemented and verified.
+
+---
+
+# FINAL NON-NEGOTIABLE INSTRUCTIONS
+
+- Do not rebuild my application.
+- Do not ruin existing working code.
+- Do not remove existing features.
+- Do not replace the exam engine.
+- Do not fake database persistence.
+- Do not fake analytics.
+- Do not create insecure authentication.
+- Do not expose secret keys.
+- Do not give students access to other students' data.
+- Do not give teachers access to unrelated classes.
+- Do not allow self-assigned admin roles.
+- Do not use frontend-only role security.
+- Do not leave buttons disconnected from functionality.
+- Do not create destructive database migrations.
+- Do not stop after writing a plan.
+- Implement the actual features when you have access to the project and tools.
+
+If a feature cannot safely be implemented without breaking existing functionality, explain the issue and preserve the original working behavior.
+
+**Build a secure, scalable, multi-user ExamAI platform on top of my current application. Extend it intelligently. Preserve what works. Test every important change.**

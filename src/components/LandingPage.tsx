@@ -10,7 +10,15 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import type { UserRole } from '../types/index';
 import { BrandMark } from './BrandMark';
+
+function getWorkspacePath(role: UserRole): string {
+  if (role === 'admin') return '/admin';
+  if (role === 'teacher') return '/teacher';
+  return '/student';
+}
 
 interface LandingPageProps {
   onNavigate: (path: string) => void;
@@ -51,9 +59,11 @@ const SAMPLE_TESTIMONIALS = [
 ];
 
 export function LandingPage({ onNavigate }: LandingPageProps) {
+  const { user, logout } = useAuth();
   const [openFaq, setOpenFaq] = useState<number | null>(0);
   const [heroImgFailed, setHeroImgFailed] = useState(false);
   const [previewTab, setPreviewTab] = useState<'extract' | 'mcq' | 'rubric'>('mcq');
+  const dashboardPath = user ? getWorkspacePath(user.role) : '/login';
 
   return (
     <div className="min-h-screen bg-[#FFFFFF] text-[#252525]">
@@ -90,21 +100,52 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
             </a>
           </nav>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
-              onClick={() => onNavigate('/student')}
-              className="px-3.5 py-2 rounded-lg border border-[#E3DED3] hover:bg-[#F5F1E8] text-sm font-semibold text-[#252525] transition-colors whitespace-nowrap shrink-0"
+              onClick={() => onNavigate('/practice')}
+              className="px-3 py-2 rounded-lg text-sm font-semibold text-[#66543A] hover:bg-[#F5F1E8] transition-colors whitespace-nowrap shrink-0"
             >
-              Student Mode
+              Practice
             </button>
-            <button
-              type="button"
-              onClick={() => onNavigate('/teacher')}
-              className="px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
-            >
-              Teacher Mode
-            </button>
+            {user ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onNavigate(dashboardPath)}
+                  className="px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
+                >
+                  Dashboard
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await logout();
+                    onNavigate('/login');
+                  }}
+                  className="px-3.5 py-2 rounded-lg border border-[#E3DED3] hover:bg-[#F5F1E8] text-sm font-semibold text-[#252525] transition-colors whitespace-nowrap shrink-0"
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('/login')}
+                  className="px-3.5 py-2 rounded-lg border border-[#E3DED3] hover:bg-[#F5F1E8] text-sm font-semibold text-[#252525] transition-colors whitespace-nowrap shrink-0"
+                >
+                  Login
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('/register')}
+                  className="px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
+                >
+                  Register
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -114,29 +155,49 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
         <div className="max-w-[1280px] mx-auto px-6 py-16 lg:py-24 grid grid-cols-1 lg:grid-cols-12 gap-12 items-stretch">
           <div className="lg:col-span-6 flex flex-col justify-center space-y-6">
             <p className="text-sm font-semibold tracking-wide text-[#DFC58E]">
-              Dual-Mode Assessment &amp; Study Platform
+              Multi-User Academic Assessment Platform
             </p>
             <h1 className="text-[clamp(2.35rem,4.2vw,3.75rem)] font-display font-bold leading-[1.08] tracking-tight text-balance">
               Turn lecture PDFs and study notes into graded exams in seconds.
             </h1>
             <p className="text-base lg:text-lg text-[#D6D0C4] leading-relaxed max-w-xl">
-              ExamAI equips students with self-paced practice quizzes and equips teachers with official timed exams, randomized variants, tab-activity tracking, and descriptive rubric grading.
+              ExamAI equips students with classes, progress analytics, and practice quizzes, empowers teachers with timed exams and rubrics, and gives administrators full platform oversight.
             </p>
-            <div className="flex flex-wrap items-center gap-4 pt-2">
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              {user ? (
+                <button
+                  type="button"
+                  onClick={() => onNavigate(dashboardPath)}
+                  className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] font-semibold text-sm transition-colors whitespace-nowrap"
+                >
+                  Open {user.role === 'admin' ? 'Admin Console' : user.role === 'teacher' ? 'Teacher Workspace' : 'Student Workspace'}
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('/register')}
+                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] font-semibold text-sm transition-colors whitespace-nowrap"
+                  >
+                    Create Account
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('/login')}
+                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-[#303030] hover:bg-[#3D3D3D] border border-white/15 text-white font-semibold text-sm transition-colors whitespace-nowrap"
+                  >
+                    Sign In
+                  </button>
+                </>
+              )}
               <button
                 type="button"
-                onClick={() => onNavigate('/student')}
-                className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] font-semibold text-sm transition-colors whitespace-nowrap"
+                onClick={() => onNavigate('/practice')}
+                className="inline-flex items-center gap-2 px-5 py-3.5 rounded-xl border border-white/15 hover:bg-white/10 text-[#DFC58E] font-semibold text-sm transition-colors whitespace-nowrap"
               >
-                Open Student Mode
-                <ArrowRight className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => onNavigate('/teacher')}
-                className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-[#303030] hover:bg-[#3D3D3D] border border-white/15 text-white font-semibold text-sm transition-colors whitespace-nowrap"
-              >
-                Open Teacher Mode
+                Try Guest Practice
               </button>
             </div>
             <div className="pt-4 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-5 gap-y-1.5 text-xs text-[#B5B0A6]">
@@ -328,10 +389,10 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
 
               <button
                 type="button"
-                onClick={() => onNavigate('/student')}
+                onClick={() => onNavigate(user?.role === 'student' ? '/student' : '/register')}
                 className="w-full py-3 px-4 rounded-xl bg-[#171717] hover:bg-[#303030] text-white text-sm font-semibold transition-colors"
               >
-                Start in Study Mode
+                {user?.role === 'student' ? 'Open Student Workspace' : 'Register as Student'}
               </button>
             </div>
 
@@ -370,10 +431,10 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
 
               <button
                 type="button"
-                onClick={() => onNavigate('/teacher')}
+                onClick={() => onNavigate(user?.role === 'teacher' ? '/teacher' : '/register')}
                 className="w-full py-3 px-4 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold transition-colors"
               >
-                Start in Teaching Mode
+                {user?.role === 'teacher' ? 'Open Teacher Workspace' : 'Register as Teacher'}
               </button>
             </div>
           </div>
@@ -593,11 +654,14 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-6 text-xs font-medium">
-            <button type="button" onClick={() => onNavigate('/student')} className="hover:text-white transition-colors">
-              Student Mode
+            <button type="button" onClick={() => onNavigate('/practice')} className="hover:text-white transition-colors">
+              Practice
             </button>
-            <button type="button" onClick={() => onNavigate('/teacher')} className="hover:text-white transition-colors">
-              Teacher Mode
+            <button type="button" onClick={() => onNavigate('/login')} className="hover:text-white transition-colors">
+              Login
+            </button>
+            <button type="button" onClick={() => onNavigate('/register')} className="hover:text-white transition-colors">
+              Register
             </button>
             <a href="#features" className="hover:text-white transition-colors">
               Features

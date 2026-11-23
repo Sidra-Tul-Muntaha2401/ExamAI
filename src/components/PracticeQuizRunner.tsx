@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  Flag,
   Loader2,
   RotateCcw,
   XCircle,
@@ -29,6 +30,8 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [markedForReview, setMarkedForReview] = useState<Record<string, boolean>>({});
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const [result, setResult] = useState<{
@@ -69,6 +72,7 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
         };
       }>(`/api/practice-quizzes/${quiz.id}/attempt`, { answers });
       setResult(data.attempt);
+      setShowConfirmModal(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit quiz.');
     } finally {
@@ -76,9 +80,22 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
     }
   };
 
+  const requestSubmit = () => {
+    if (!quiz) return;
+    const unanswered = quiz.questions.length - quiz.questions.filter((q) => (answers[q.id] || '').trim().length > 0).length;
+    const flagged = quiz.questions.filter((q) => Boolean(markedForReview[q.id])).length;
+    if (unanswered > 0 || flagged > 0) {
+      setShowConfirmModal(true);
+    } else {
+      void handleSubmit();
+    }
+  };
+
   const handleRetry = () => {
     setResult(null);
     setAnswers({});
+    setMarkedForReview({});
+    setShowConfirmModal(false);
     setCurrentIndex(0);
   };
 
@@ -113,6 +130,7 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
   const questions = quiz.questions;
   const activeQuestion = questions[currentIndex];
   const answeredCount = questions.filter((q) => (answers[q.id] || '').trim().length > 0).length;
+  const flaggedCount = questions.filter((q) => Boolean(markedForReview[q.id])).length;
 
   return (
     <div className="min-h-screen bg-[#F5F1E8] text-[#252525]">
@@ -136,7 +154,7 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
       <main className="max-w-[1000px] mx-auto px-6 py-8">
         {result ? (
           <div className="space-y-6">
-            <div className="bg-[#171717] text-white rounded-2xl p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+            <div className="bg-[#171717] text-white rounded-2xl p-6 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
               <div>
                 <p className="text-xs font-semibold text-[#DFC58E]">Practice Quiz Results</p>
                 <h1 className="text-2xl font-display font-bold mt-1">{quiz.title}</h1>
@@ -145,6 +163,19 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
                     ? 'Objective questions are auto-graded below. Compare your written responses against suggested answers.'
                     : 'All objective questions graded automatically.'}
                 </p>
+                <div className="flex flex-wrap items-center gap-3 mt-4 text-xs">
+                  <span className="px-2.5 py-1 rounded-md bg-[#25845D]/20 text-[#7CE3B6] font-semibold tabular-nums">
+                    {result.breakdown.filter((b) => b.isCorrect === true).length} Correct
+                  </span>
+                  <span className="px-2.5 py-1 rounded-md bg-[#C64B4B]/20 text-[#F49A9A] font-semibold tabular-nums">
+                    {result.breakdown.filter((b) => b.isCorrect === false).length} Incorrect
+                  </span>
+                  {result.hasDescriptiveQuestions && (
+                    <span className="px-2.5 py-1 rounded-md bg-[#4476A8]/25 text-[#9CC7F0] font-semibold tabular-nums">
+                      {result.breakdown.filter((b) => b.isCorrect === null).length} Self-Review
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-6 shrink-0">
                 <div>
@@ -228,14 +259,41 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             <div className="lg:col-span-8 bg-white border border-[#E3DED3] rounded-2xl p-6 lg:p-8 space-y-6">
-              <div className="flex items-center justify-between text-xs text-[#77736C]">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#77736C]">
                 <span className="font-mono font-semibold text-[#66543A]">
                   Question {currentIndex + 1} of {questions.length}
                 </span>
-                <span>
-                  {activeQuestion.questionType.replace('_', ' ').toUpperCase()} · {activeQuestion.difficulty} ·{' '}
-                  {activeQuestion.marks} marks
-                </span>
+                <div className="flex items-center gap-3">
+                  <span>
+                    {activeQuestion.questionType.replace('_', ' ').toUpperCase()} · {activeQuestion.difficulty} ·{' '}
+                    {activeQuestion.marks} marks
+                  </span>
+                  <button
+                    type="button"
+                    aria-pressed={Boolean(markedForReview[activeQuestion.id])}
+                    onClick={() =>
+                      setMarkedForReview((prev) => ({
+                        ...prev,
+                        [activeQuestion.id]: !prev[activeQuestion.id],
+                      }))
+                    }
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold transition-colors ${
+                      markedForReview[activeQuestion.id]
+                        ? 'bg-[#B77B25]/15 border-[#B77B25] text-[#7A4F12]'
+                        : 'bg-[#F5F1E8] border-[#E3DED3] text-[#77736C] hover:text-[#252525]'
+                    }`}
+                  >
+                    <Flag className="w-3 h-3" />
+                    {markedForReview[activeQuestion.id] ? 'Flagged' : 'Flag'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="w-full h-1.5 bg-[#EFEBE2] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#C9A45C] transition-all duration-200"
+                  style={{ width: `${Math.round(((currentIndex + 1) / questions.length) * 100)}%` }}
+                />
               </div>
 
               <h2 className="text-xl font-display font-semibold text-[#252525] leading-snug">
@@ -301,7 +359,7 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
                   <button
                     type="button"
                     disabled={submitting}
-                    onClick={handleSubmit}
+                    onClick={requestSubmit}
                     className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold"
                   >
                     {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -312,25 +370,41 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
             </div>
 
             <div className="lg:col-span-4 bg-white border border-[#E3DED3] rounded-2xl p-6 space-y-4">
-              <h3 className="text-sm font-bold text-[#252525]">Question Navigator</h3>
+              <div>
+                <h3 className="text-sm font-bold text-[#252525]">Question Navigator</h3>
+                <p className="text-xs text-[#77736C] mt-0.5 tabular-nums">
+                  {answeredCount} answered · {questions.length - answeredCount} remaining
+                  {flaggedCount > 0 ? ` · ${flaggedCount} flagged` : ''}
+                </p>
+              </div>
               <div className="grid grid-cols-5 gap-2">
                 {questions.map((q, idx) => {
                   const answered = (answers[q.id] || '').trim().length > 0;
+                  const flagged = Boolean(markedForReview[q.id]);
                   const active = idx === currentIndex;
                   return (
                     <button
                       key={q.id}
                       type="button"
                       onClick={() => setCurrentIndex(idx)}
-                      className={`h-10 rounded-lg font-mono text-xs font-semibold border transition-colors ${
+                      aria-current={active ? 'step' : undefined}
+                      className={`relative h-10 rounded-lg font-mono text-xs font-semibold border transition-colors ${
                         active
                           ? 'bg-[#C9A45C] border-[#C9A45C] text-[#171717]'
-                          : answered
-                            ? 'bg-[#EFEBE2] border-[#66543A]/40 text-[#252525]'
-                            : 'bg-[#F5F1E8] border-[#E3DED3] text-[#77736C]'
+                          : flagged
+                            ? 'bg-[#B77B25]/15 border-[#B77B25] text-[#7A4F12]'
+                            : answered
+                              ? 'bg-[#EFEBE2] border-[#66543A]/40 text-[#252525]'
+                              : 'bg-[#F5F1E8] border-[#E3DED3] text-[#77736C]'
                       }`}
                     >
                       {idx + 1}
+                      {flagged && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#B77B25]"
+                        />
+                      )}
                     </button>
                   );
                 })}
@@ -338,7 +412,7 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
               <button
                 type="button"
                 disabled={submitting}
-                onClick={handleSubmit}
+                onClick={requestSubmit}
                 className="w-full py-2.5 rounded-xl bg-[#171717] hover:bg-[#303030] text-white text-sm font-semibold transition-colors"
               >
                 Finish &amp; Grade Quiz
@@ -347,6 +421,42 @@ export function PracticeQuizRunner({ quizId, onNavigate }: PracticeQuizRunnerPro
           </div>
         )}
       </main>
+
+      {showConfirmModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-40 bg-[#171717]/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="bg-white border border-[#E3DED3] rounded-2xl max-w-md w-full p-6 space-y-4">
+            <h3 className="text-lg font-display font-bold text-[#252525]">Finish Practice Quiz?</h3>
+            <p className="text-sm text-[#77736C]">
+              You answered <strong className="text-[#252525]">{answeredCount}</strong> of{' '}
+              <strong className="text-[#252525]">{questions.length}</strong> questions
+              {flaggedCount > 0 ? ` and flagged ${flaggedCount} for review` : ''}.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => setShowConfirmModal(false)}
+                className="px-4 py-2 rounded-lg border border-[#E3DED3] text-sm font-semibold text-[#77736C] hover:text-[#252525]"
+              >
+                Keep Reviewing
+              </button>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => void handleSubmit()}
+                className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold"
+              >
+                {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                Grade Now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

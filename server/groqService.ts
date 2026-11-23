@@ -173,3 +173,92 @@ export async function generateQuestionsWithGroq(
 
   return await generateViaGemini(geminiKey!, systemPrompt, excerpt, input);
 }
+
+export interface ExplainConceptInput {
+  examTitle: string;
+  subject: string;
+  prompt: string;
+  questionType: QuestionType;
+  studentAnswer: string;
+  correctAnswer: string;
+  suggestedAnswer: string;
+  existingExplanation: string;
+}
+
+export async function explainQuestionConceptWithGroq(input: ExplainConceptInput): Promise<string> {
+  const groqKey = process.env.GROQ_API_KEY?.trim();
+  const geminiKey = process.env.GEMINI_API_KEY?.trim();
+
+  if (!groqKey && !geminiKey) {
+    throw new Error(
+      'No AI API key is configured on the server. Add GROQ_API_KEY (or GEMINI_API_KEY) to enable AI study explanations.'
+    );
+  }
+
+  const systemPrompt = `You are a concise, encouraging academic tutor for ExamAI.
+Explain the underlying concept behind the submitted exam question clearly in 3-5 sentences.
+Cover: (1) why the correct/model answer works, (2) what common misconception or gap occurred in the student's response (if provided), and (3) one quick study tip to remember it.
+Never invent grades or claim to change official scores. Output clean plain text with no markdown code fences.`;
+
+  const referenceAnswer = input.correctAnswer || input.suggestedAnswer || 'Not specified';
+  const userMessage = [
+    `Subject: ${input.subject} (${input.examTitle})`,
+    `Question (${input.questionType}): ${input.prompt}`,
+    `Reference / Correct Answer: ${referenceAnswer}`,
+    input.existingExplanation ? `Existing Note: ${input.existingExplanation}` : '',
+    `Student Response: ${input.studentAnswer.trim() || '(Unanswered)'}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  if (groqKey) {
+    const preferredModel = process.env.GROQ_MODEL?.trim() || 'openai/gpt-oss-120b';
+    const candidateModels = Array.from(
+      new Set([preferredModel, 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'])
+    );
+    const groq = new Groq({ apiKey: groqKey });
+    let lastError: unknown;
+
+    for (const model of candidateModels) {
+      try {
+        const completion = await groq.chat.completions.create({
+          model,
+          temperature: 0.3,
+          max_tokens: 1000,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+        });
+        const content = completion.choices[0]?.message?.content
+          ?.replace(/<think>[\s\S]*?<\/think>/gi, '')
+          .trim();
+        if (content) return content;
+      } catch (err) {
+        lastError = err;
+        const msg = err instanceof Error ? err.message : '';
+        if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
+          throw new Error('Groq API authentication failed. Please verify your GROQ_API_KEY.');
+        }
+      }
+    }
+
+    if (!geminiKey) {
+      const msg = lastError instanceof Error ? lastError.message : 'Unable to generate explanation.';
+      throw new Error(`AI explanation failed: ${msg}`);
+    }
+  }
+
+  const { GoogleGenAI } = await import('@google/genai');
+  const ai = new GoogleGenAI({ apiKey: geminiKey! });
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: `${systemPrompt}\n\n${userMessage}`,
+    config: { temperature: 0.3 },
+  });
+  const text = response.text?.trim();
+  if (!text) {
+    throw new Error('AI returned an empty explanation.');
+  }
+  return text;
+}
