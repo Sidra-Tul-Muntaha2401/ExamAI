@@ -14,13 +14,16 @@ export function getAiAvailability(): {
   groqConfigured: boolean;
   geminiConfigured: boolean;
   aiConfigured: boolean;
+  groqModel: string;
 } {
   const groqConfigured = Boolean(process.env.GROQ_API_KEY?.trim());
   const geminiConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
+  const groqModel = process.env.GROQ_MODEL?.trim() || 'openai/gpt-oss-120b';
   return {
     groqConfigured,
     geminiConfigured,
     aiConfigured: groqConfigured || geminiConfigured,
+    groqModel,
   };
 }
 
@@ -54,46 +57,55 @@ async function generateViaGroq(
   excerpt: string,
   input: GenerateQuestionsInput
 ): Promise<QuizQuestion[]> {
-  const preferredModel = process.env.GROQ_MODEL?.trim() || 'llama-3.3-70b-versatile';
-  const candidateModels =
-    preferredModel === 'llama-3.1-8b-instant'
-      ? [preferredModel]
-      : [preferredModel, 'llama-3.1-8b-instant'];
+  const preferredModel = process.env.GROQ_MODEL?.trim() || 'openai/gpt-oss-120b';
+  const candidateModels = Array.from(
+    new Set([preferredModel, 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'])
+  );
 
   const groq = new Groq({ apiKey });
   let lastError: unknown;
 
   for (const model of candidateModels) {
-    try {
-      const completion = await groq.chat.completions.create({
-        model,
-        temperature: 0.3,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: systemPrompt },
-          {
-            role: 'user',
-            content: `SOURCE STUDY/TEACHING MATERIAL:\n\n${excerpt}`,
-          },
-        ],
-      });
+    for (const useJsonMode of [true, false]) {
+      try {
+        const completion = await groq.chat.completions.create({
+          model,
+          temperature: 0.3,
+          ...(useJsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+          messages: [
+            { role: 'system', content: systemPrompt },
+            {
+              role: 'user',
+              content: `SOURCE STUDY/TEACHING MATERIAL:\n\n${excerpt}`,
+            },
+          ],
+        });
 
-      const content = completion.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error('Groq API returned an empty response.');
-      }
+        const content = completion.choices[0]?.message?.content;
+        if (!content) {
+          throw new Error('Groq API returned an empty response.');
+        }
 
-      return parseAndValidateGroqQuestions(
-        content,
-        input.questionType,
-        input.difficulty,
-        input.topic
-      );
-    } catch (err) {
-      lastError = err;
-      const msg = err instanceof Error ? err.message : '';
-      if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
-        throw new Error('Groq API authentication failed. Please verify your GROQ_API_KEY.');
+        return parseAndValidateGroqQuestions(
+          content,
+          input.questionType,
+          input.difficulty,
+          input.topic
+        );
+      } catch (err) {
+        lastError = err;
+        const msg = err instanceof Error ? err.message : '';
+        if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
+          throw new Error('Groq API authentication failed. Please verify your GROQ_API_KEY.');
+        }
+        // Only retry without json_object if json_validate / response_format caused a 400 error
+        if (
+          useJsonMode &&
+          (msg.includes('response_format') || msg.includes('json_validate') || msg.includes('400'))
+        ) {
+          continue;
+        }
+        break;
       }
     }
   }

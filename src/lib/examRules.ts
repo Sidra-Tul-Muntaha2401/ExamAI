@@ -201,15 +201,15 @@ export function buildSmartContextExcerpt(sourceText: string, maxChars = 15000): 
 }
 
 export function stripMarkdownCodeFences(raw: string): string {
-  const trimmed = raw.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (fenced) return fenced[1].trim();
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
+  const withoutThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const fenced = withoutThink.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fenced ? fenced[1].trim() : withoutThink;
+  const firstBrace = candidate.indexOf('{');
+  const lastBrace = candidate.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace > firstBrace) {
-    return trimmed.slice(firstBrace, lastBrace + 1);
+    return candidate.slice(firstBrace, lastBrace + 1);
   }
-  return trimmed;
+  return candidate;
 }
 
 function stripOptionLabelPrefix(text: string): string {
