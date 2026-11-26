@@ -7,8 +7,10 @@ export async function ensureDatabaseInitialized(): Promise<void> {
   await store.initialize();
 }
 
-export async function createApiApp(): Promise<express.Express> {
-  await ensureDatabaseInitialized();
+export async function createApiApp(options?: { waitForDb?: boolean }): Promise<express.Express> {
+  if (options?.waitForDb !== false) {
+    await ensureDatabaseInitialized();
+  }
 
   const app = express();
   app.set('trust proxy', 1);

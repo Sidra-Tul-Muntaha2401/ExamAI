@@ -617,7 +617,11 @@ export function StudentDashboard({ onNavigate }: { onNavigate: (path: string) =>
                     </button>
                   </div>
                 ) : (
-                  <DocumentStudio role="student" onSaved={loadDashboard} />
+                  <DocumentStudio
+                    role="student"
+                    onSaved={loadDashboard}
+                    onStartPractice={(quizId) => onNavigate(`/practice/${quizId}?started=1`)}
+                  />
                 ))}
 
               {tab === 'practice' &&

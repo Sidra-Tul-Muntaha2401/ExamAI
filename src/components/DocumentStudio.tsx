@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
+  BookOpen,
   CheckCircle2,
   FileText,
   Loader2,
+  Play,
   Plus,
   RefreshCw,
   Save,
+  ShieldCheck,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -14,6 +17,7 @@ import { api } from '../lib/api';
 import type {
   Difficulty,
   DocumentRecord,
+  PracticeQuizRecord,
   QuestionType,
   QuizQuestion,
   UserRole,
@@ -22,9 +26,10 @@ import type {
 interface DocumentStudioProps {
   role: UserRole;
   onSaved?: () => void;
+  onStartPractice?: (quizId: string) => void;
 }
 
-export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
+export function DocumentStudio({ role, onSaved, onStartPractice }: DocumentStudioProps) {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(true);
   const [selectedDocId, setSelectedDocId] = useState<string>('');
@@ -48,6 +53,7 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
   });
 
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
+  const [preparedQuiz, setPreparedQuiz] = useState<PracticeQuizRecord | null>(null);
   const [quizTitle, setQuizTitle] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -61,7 +67,7 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
       setDocuments(data.documents);
       if (data.documents.length > 0 && !selectedDocId) {
         setSelectedDocId(data.documents[0].id);
-        setQuizTitle(`${data.documents[0].title} — Practice Set`);
+        setQuizTitle(`${data.documents[0].title} — Practice Exam`);
       }
     } catch {
       // Handled silently on initial load
@@ -85,12 +91,29 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
       });
   }, []);
 
-  const generateForDocument = async (doc: DocumentRecord) => {
+  const generateForDocument = async (doc: DocumentRecord, explicitTitle?: string) => {
     setGenError(null);
     setSaveMessage(null);
     setGenerating(true);
 
     try {
+      if (role === 'student') {
+        const resolvedTitle =
+          (explicitTitle ?? quizTitle).trim() || `${doc.title} — ${difficulty} Practice Exam`;
+        const data = await api.post<{ quiz: PracticeQuizRecord }>('/api/ai/generate-questions', {
+          documentId: doc.id,
+          title: resolvedTitle,
+          questionType,
+          difficulty,
+          count,
+          topic: topic || doc.title,
+        });
+        setQuestions([]);
+        setPreparedQuiz(data.quiz);
+        onSaved?.();
+        return;
+      }
+
       const data = await api.post<{ questions: QuizQuestion[] }>('/api/ai/generate-questions', {
         documentId: doc.id,
         questionType,
@@ -120,6 +143,7 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
     setUploadSuccess(null);
     setGenError(null);
     setSaveMessage(null);
+    setPreparedQuiz(null);
     setUploading(true);
 
     try {
@@ -130,9 +154,10 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
       }
 
       const data = await api.post<{ document: DocumentRecord }>('/api/documents/upload', formData);
+      const nextTitle = `${data.document.title} — ${difficulty} Practice Exam`;
       setDocuments((prev) => [data.document, ...prev]);
       setSelectedDocId(data.document.id);
-      setQuizTitle(`${data.document.title} — Practice Set`);
+      setQuizTitle(nextTitle);
       setUploadTitle('');
       setUploadSuccess(
         `Extracted ${data.document.wordCount.toLocaleString()} words from ${data.document.originalFilename}.`
@@ -140,8 +165,8 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
       onSaved?.();
       setUploading(false);
 
-      if (autoGenerate) {
-        await generateForDocument(data.document);
+      if (role === 'student' || autoGenerate) {
+        await generateForDocument(data.document, nextTitle);
       }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed.');
@@ -267,6 +292,90 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
     }
   };
 
+  if (role === 'student' && preparedQuiz) {
+    const totalMarks = preparedQuiz.questions.reduce((sum, q) => sum + (q.marks || 0), 0);
+    return (
+      <div
+        data-testid="student-exam-instructions"
+        className="bg-white border border-[#E3DED3] rounded-2xl overflow-hidden max-w-3xl mx-auto"
+      >
+        <div className="bg-[#171717] text-white p-6 sm:p-8 space-y-2">
+          <div className="inline-flex items-center gap-2 text-xs font-semibold text-[#DFC58E]">
+            <ShieldCheck className="w-4 h-4" />
+            Practice Exam Ready
+          </div>
+          <h2 className="text-2xl font-display font-bold">{preparedQuiz.title}</h2>
+          <p className="text-sm text-[#D6D0C4]">
+            Your document has been processed and your practice exam questions and answer keys have been prepared securely.
+          </p>
+        </div>
+
+        <div className="p-6 sm:p-8 space-y-6">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3.5 rounded-xl bg-[#F5F1E8]/80 border border-[#E3DED3]">
+              <div className="text-[11px] font-medium text-[#77736C]">Questions</div>
+              <div className="font-mono text-lg font-bold text-[#252525] tabular-nums mt-0.5">
+                {preparedQuiz.questions.length}
+              </div>
+            </div>
+            <div className="p-3.5 rounded-xl bg-[#F5F1E8]/80 border border-[#E3DED3]">
+              <div className="text-[11px] font-medium text-[#77736C]">Difficulty</div>
+              <div className="text-sm font-bold text-[#252525] mt-1">{preparedQuiz.difficulty}</div>
+            </div>
+            <div className="p-3.5 rounded-xl bg-[#F5F1E8]/80 border border-[#E3DED3]">
+              <div className="text-[11px] font-medium text-[#77736C]">Format</div>
+              <div className="text-sm font-bold text-[#252525] mt-1">
+                {preparedQuiz.questionType.replace('_', ' ').toUpperCase()}
+              </div>
+            </div>
+            <div className="p-3.5 rounded-xl bg-[#F5F1E8]/80 border border-[#E3DED3]">
+              <div className="text-[11px] font-medium text-[#77736C]">Total Marks</div>
+              <div className="font-mono text-lg font-bold text-[#252525] tabular-nums mt-0.5">
+                {totalMarks}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-[#F5F1E8]/70 border border-[#E3DED3] p-5 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-[#252525]">
+              <BookOpen className="w-4 h-4 text-[#66543A]" />
+              Exam Instructions
+            </div>
+            <ul className="space-y-2 text-sm text-[#4F4B45] list-disc pl-5">
+              <li>
+                Answer keys, correctness indicators, and explanations remain hidden while your practice exam is in progress.
+              </li>
+              <li>
+                Use <strong>Next</strong>, <strong>Previous</strong>, or the <strong>Question Navigator</strong> to move freely across questions and flag items for review.
+              </li>
+              <li>
+                Click <strong>Submit Exam</strong> when you finish to calculate your score, percentage, and unlock detailed answer explanations.
+              </li>
+            </ul>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#E3DED3]">
+            <button
+              type="button"
+              onClick={() => setPreparedQuiz(null)}
+              className="px-4 py-2.5 rounded-xl border border-[#E3DED3] bg-white hover:bg-[#EFEBE2] text-sm font-semibold text-[#252525] transition-colors"
+            >
+              Prepare Another Practice Exam
+            </button>
+            <button
+              type="button"
+              onClick={() => onStartPractice?.(preparedQuiz.id)}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-bold transition-colors whitespace-nowrap"
+            >
+              <Play className="w-4 h-4" />
+              Start Practice Exam
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       {/* Step 1: Upload & Document Selection */}
@@ -277,7 +386,9 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
               01. Upload {role === 'teacher' ? 'Teaching' : 'Study'} Material
             </h3>
             <p className="text-sm text-[#77736C] mt-1">
-              Upload text-based PDF or DOCX files up to 10 MB. Text is extracted on the server and previewed before AI generation.
+              {role === 'student'
+                ? 'Upload a text-based PDF or DOCX file up to 10 MB. ExamAI will process your document and prepare your practice exam automatically.'
+                : 'Upload text-based PDF or DOCX files up to 10 MB. Text is extracted on the server and previewed before AI generation.'}
             </p>
           </div>
 
@@ -296,13 +407,17 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
           </div>
 
           <label className="flex flex-col items-center justify-center border-2 border-dashed border-[#C9A45C]/70 bg-[#EFEBE2]/65 hover:bg-[#EFEBE2] transition-colors rounded-xl p-6 cursor-pointer text-center">
-            {uploading ? (
+            {uploading || (role === 'student' && generating) ? (
               <Loader2 className="w-7 h-7 text-[#66543A] animate-spin mb-2" />
             ) : (
               <Upload className="w-7 h-7 text-[#66543A] mb-2" />
             )}
             <span className="text-sm font-semibold text-[#252525]">
-              {uploading ? 'Extracting document text...' : 'Choose PDF or DOCX file'}
+              {uploading
+                ? 'Processing document...'
+                : role === 'student' && generating
+                  ? 'Preparing practice exam...'
+                  : 'Choose PDF or DOCX file'}
             </span>
             <span className="text-xs text-[#77736C] mt-1">
               Supported: .pdf (text-based), .docx · Max 10 MB (4.5 MB on Vercel)
@@ -316,15 +431,17 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
             />
           </label>
 
-          <label className="flex items-center gap-2.5 text-xs font-medium text-[#252525] cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={autoGenerate}
-              onChange={(e) => setAutoGenerate(e.target.checked)}
-              className="accent-[#66543A] w-4 h-4 rounded"
-            />
-            <span>Auto-generate questions immediately after PDF/DOCX upload</span>
-          </label>
+          {role !== 'student' && (
+            <label className="flex items-center gap-2.5 text-xs font-medium text-[#252525] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={autoGenerate}
+                onChange={(e) => setAutoGenerate(e.target.checked)}
+                className="accent-[#66543A] w-4 h-4 rounded"
+              />
+              <span>Auto-generate questions immediately after PDF/DOCX upload</span>
+            </label>
+          )}
 
           {uploadError && (
             <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-[#C64B4B]/10 border border-[#C64B4B]/35 text-sm text-[#982E2E]">
@@ -365,7 +482,7 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
                         type="button"
                         onClick={() => {
                           setSelectedDocId(doc.id);
-                          setQuizTitle(`${doc.title} — Practice Set`);
+                          setQuizTitle(`${doc.title} — ${difficulty} Practice Exam`);
                         }}
                         className="flex-1 text-left min-w-0"
                       >
@@ -394,14 +511,18 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
           </div>
         </div>
 
-        {/* Step 2: Extracted Text Preview + Groq Generator Controls */}
+        {/* Step 2: Generator Controls */}
         <div className="lg:col-span-7 bg-white border border-[#E3DED3] rounded-xl p-6 space-y-5">
           <div>
             <h3 className="text-lg font-semibold text-[#252525]">
-              02. Extracted Text Preview &amp; Question Generation
+              {role === 'student'
+                ? '02. Configure & Prepare Practice Exam'
+                : '02. Extracted Text Preview & Question Generation'}
             </h3>
             <p className="text-sm text-[#77736C] mt-1">
-              Review the extracted source text and configure question parameters. ExamAI samples across your full document and generates grounded questions.
+              {role === 'student'
+                ? 'Choose your practice format and difficulty. Questions and answer keys are prepared securely on the server with no answer previews before you start.'
+                : 'Review the extracted source text and configure question parameters. ExamAI samples across your full document and generates grounded questions.'}
             </p>
           </div>
 
@@ -410,32 +531,64 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#B77B25]" />
               <span>
                 No AI API key is configured on this server yet (<code className="font-mono">GROQ_API_KEY</code> or{' '}
-                <code className="font-mono">GEMINI_API_KEY</code>). Text extraction works normally, and you can add questions manually or add an API key in your environment settings to enable AI question generation.
+                <code className="font-mono">GEMINI_API_KEY</code>). Text extraction works normally, and you can add an API key in your environment settings to enable AI question generation.
               </span>
             </div>
           )}
 
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-[#252525]">
-                Extracted Source Text {selectedDoc ? `— ${selectedDoc.title}` : ''}
-              </label>
-              {selectedDoc && (
-                <span className="text-xs text-[#77736C] tabular-nums">
-                  {selectedDoc.wordCount.toLocaleString()} words extracted
-                </span>
-              )}
+          {role === 'student' ? (
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl bg-[#F5F1E8]/70 border border-[#E3DED3] flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-[#77736C]">Selected Study Document</div>
+                  <div className="text-sm font-bold text-[#252525] truncate mt-0.5">
+                    {selectedDoc ? selectedDoc.title : 'Upload or select a PDF/DOCX document on the left'}
+                  </div>
+                </div>
+                {selectedDoc && (
+                  <span className="text-xs font-mono text-[#66543A] shrink-0 tabular-nums">
+                    {selectedDoc.wordCount.toLocaleString()} words ready
+                  </span>
+                )}
+              </div>
+
+              <div>
+                <label htmlFor="student-quiz-title" className="block text-xs font-semibold text-[#252525] mb-1.5">
+                  Practice Exam Title (optional)
+                </label>
+                <input
+                  id="student-quiz-title"
+                  type="text"
+                  value={quizTitle}
+                  onChange={(e) => setQuizTitle(e.target.value)}
+                  placeholder="e.g., Biology Chapter 4 Practice Exam"
+                  className="w-full px-3.5 py-2.5 text-sm bg-[#F5F1E8]/60 border border-[#E3DED3] rounded-lg focus:bg-white focus:border-[#C9A45C] outline-none"
+                />
+              </div>
             </div>
-            <div className="h-44 overflow-y-auto p-4 bg-[#F5F1E8]/70 border border-[#E3DED3] rounded-lg text-sm text-[#252525] leading-relaxed whitespace-pre-wrap font-sans">
-              {selectedDoc ? (
-                selectedDoc.extractedText
-              ) : (
-                <span className="text-[#77736C]">
-                  Select or upload a PDF/DOCX document on the left to inspect its extracted text.
-                </span>
-              )}
+          ) : (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold text-[#252525]">
+                  Extracted Source Text {selectedDoc ? `— ${selectedDoc.title}` : ''}
+                </label>
+                {selectedDoc && (
+                  <span className="text-xs text-[#77736C] tabular-nums">
+                    {selectedDoc.wordCount.toLocaleString()} words extracted
+                  </span>
+                )}
+              </div>
+              <div className="h-44 overflow-y-auto p-4 bg-[#F5F1E8]/70 border border-[#E3DED3] rounded-lg text-sm text-[#252525] leading-relaxed whitespace-pre-wrap font-sans">
+                {selectedDoc ? (
+                  selectedDoc.extractedText
+                ) : (
+                  <span className="text-[#77736C]">
+                    Select or upload a PDF/DOCX document on the left to inspect its extracted text.
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
             <div>
@@ -502,11 +655,22 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
             </div>
           </div>
 
+          {(uploading || (role === 'student' && generating)) && (
+            <div className="flex items-center gap-3 p-4 rounded-xl bg-[#EFEBE2] border border-[#C9A45C]/60 text-sm text-[#252525]">
+              <Loader2 className="w-4 h-4 text-[#66543A] animate-spin shrink-0" />
+              <span>
+                {uploading
+                  ? 'Processing uploaded document on the server...'
+                  : 'Generating practice exam questions and storing answer keys securely in the background...'}
+              </span>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button
               type="button"
               onClick={handleGenerate}
-              disabled={generating || !selectedDocId}
+              disabled={generating || uploading || !selectedDocId}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] disabled:opacity-50 text-[#171717] text-sm font-semibold transition-colors whitespace-nowrap"
             >
               {generating ? (
@@ -514,17 +678,25 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
               ) : (
                 <RefreshCw className="w-4 h-4" />
               )}
-              {generating ? 'Generating Questions...' : 'Generate Questions with AI'}
+              {role === 'student'
+                ? generating
+                  ? 'Preparing Practice Exam...'
+                  : 'Prepare Practice Exam'
+                : generating
+                  ? 'Generating Questions...'
+                  : 'Generate Questions with AI'}
             </button>
 
-            <button
-              type="button"
-              onClick={handleAddManualQuestion}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#E3DED3] bg-white hover:bg-[#EFEBE2] text-[#252525] text-sm font-semibold transition-colors whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4 text-[#4476A8]" />
-              Add Manual Question
-            </button>
+            {role !== 'student' && (
+              <button
+                type="button"
+                onClick={handleAddManualQuestion}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#E3DED3] bg-white hover:bg-[#EFEBE2] text-[#252525] text-sm font-semibold transition-colors whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4 text-[#4476A8]" />
+                Add Manual Question
+              </button>
+            )}
           </div>
 
           {genError && (
@@ -534,7 +706,7 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
             </div>
           )}
 
-          {saveMessage && (
+          {role !== 'student' && saveMessage && (
             <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-[#25845D]/10 border border-[#25845D]/30 text-sm text-[#19593E]">
               <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#25845D]" />
               <span>{saveMessage}</span>
@@ -543,8 +715,8 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
         </div>
       </div>
 
-      {/* Step 3: Edit, Delete, Regenerate & Save Generated Questions */}
-      {questions.length > 0 && (
+      {/* Step 3: Edit, Delete, Regenerate & Save Generated Questions (Teacher Mode only) */}
+      {role !== 'student' && questions.length > 0 && (
         <div className="bg-white border border-[#E3DED3] rounded-xl p-6 space-y-6">
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[#E3DED3]">
             <div>
@@ -557,16 +729,6 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              {role === 'student' && (
-                <input
-                  type="text"
-                  value={quizTitle}
-                  onChange={(e) => setQuizTitle(e.target.value)}
-                  placeholder="Practice Quiz Title"
-                  aria-label="Practice Quiz Title"
-                  className="px-3.5 py-2 text-sm bg-[#F5F1E8]/60 border border-[#E3DED3] rounded-lg focus:bg-white focus:border-[#C9A45C] outline-none min-w-[240px]"
-                />
-              )}
               <button
                 type="button"
                 onClick={handleGenerate}
@@ -583,7 +745,7 @@ export function DocumentStudio({ role, onSaved }: DocumentStudioProps) {
                 className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-[#171717] hover:bg-[#303030] disabled:opacity-50 text-white text-sm font-semibold transition-colors whitespace-nowrap"
               >
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                {role === 'student' ? 'Save Practice Quiz' : 'Save to Question Bank'}
+                Save to Question Bank
               </button>
             </div>
           </div>

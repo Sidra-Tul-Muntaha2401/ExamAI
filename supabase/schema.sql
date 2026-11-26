@@ -318,7 +318,8 @@ CREATE INDEX IF NOT EXISTS idx_exam_assignments_student ON exam_assignments(stud
 CREATE INDEX IF NOT EXISTS idx_teacher_profiles_status ON teacher_profiles(approval_status);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_logs(created_at DESC);
 
-CREATE OR REPLACE VIEW student_progress AS
+CREATE OR REPLACE VIEW student_progress
+WITH (security_invoker = true) AS
 SELECT
   u.id AS student_id,
   u.name AS student_name,
@@ -363,6 +364,18 @@ AS $$
   LIMIT 1;
 $$;
 
+CREATE OR REPLACE FUNCTION public.current_app_status()
+RETURNS TEXT
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT account_status FROM public.users
+  WHERE auth_user_id = auth.uid()::text OR id = auth.uid()::text
+  LIMIT 1;
+$$;
+
 CREATE OR REPLACE FUNCTION public.is_approved_teacher()
 RETURNS BOOLEAN
 LANGUAGE SQL
@@ -378,6 +391,102 @@ AS $$
       AND u.role = 'teacher'
       AND u.account_status = 'active'
       AND tp.approval_status = 'approved'
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_class_teacher(target_class_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.classes c
+    WHERE c.id = target_class_id
+      AND c.teacher_id = public.current_app_user_id()
+      AND public.is_approved_teacher()
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_class_member(target_class_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.class_members cm
+    WHERE cm.class_id = target_class_id
+      AND cm.student_id = public.current_app_user_id()
+      AND cm.status = 'active'
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_exam_teacher(target_exam_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.exams e
+    WHERE e.id = target_exam_id
+      AND e.teacher_id = public.current_app_user_id()
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_exam_assigned_student(target_exam_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.exam_assignments ea
+    WHERE ea.exam_id = target_exam_id
+      AND (
+        ea.student_id = public.current_app_user_id()
+        OR (ea.class_id IS NOT NULL AND public.is_class_member(ea.class_id))
+      )
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_attempt_student(target_attempt_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.exam_attempts ea
+    WHERE ea.id = target_attempt_id
+      AND ea.student_id = public.current_app_user_id()
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.is_attempt_teacher(target_attempt_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.exam_attempts ea
+    JOIN public.exams e ON e.id = ea.exam_id
+    WHERE ea.id = target_attempt_id
+      AND e.teacher_id = public.current_app_user_id()
   );
 $$;
 
@@ -474,6 +583,7 @@ CREATE POLICY profiles_self_update ON profiles FOR UPDATE
   WITH CHECK (
     id = public.current_app_user_id()
     AND role = public.current_app_role()
+    AND account_status = public.current_app_status()
   );
 
 DROP POLICY IF EXISTS profiles_admin_all ON profiles;
@@ -500,16 +610,13 @@ CREATE POLICY teacher_profiles_admin_all ON teacher_profiles FOR ALL
   USING (public.current_app_role() = 'admin')
   WITH CHECK (public.current_app_role() = 'admin');
 
--- Classes & Class Members
+-- Classes & Class Members (uses SECURITY DEFINER helpers to avoid circular RLS recursion)
 DROP POLICY IF EXISTS classes_select ON classes;
 CREATE POLICY classes_select ON classes FOR SELECT
   USING (
     public.current_app_role() = 'admin'
     OR (teacher_id = public.current_app_user_id() AND public.is_approved_teacher())
-    OR EXISTS (
-      SELECT 1 FROM class_members cm
-      WHERE cm.class_id = classes.id AND cm.student_id = public.current_app_user_id() AND cm.status = 'active'
-    )
+    OR public.is_class_member(classes.id)
   );
 
 DROP POLICY IF EXISTS classes_teacher_write ON classes;
@@ -528,10 +635,7 @@ CREATE POLICY class_members_select ON class_members FOR SELECT
   USING (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (
-      SELECT 1 FROM classes c
-      WHERE c.id = class_members.class_id AND c.teacher_id = public.current_app_user_id() AND public.is_approved_teacher()
-    )
+    OR public.is_class_teacher(class_members.class_id)
   );
 
 DROP POLICY IF EXISTS class_members_write ON class_members;
@@ -539,18 +643,12 @@ CREATE POLICY class_members_write ON class_members FOR ALL
   USING (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (
-      SELECT 1 FROM classes c
-      WHERE c.id = class_members.class_id AND c.teacher_id = public.current_app_user_id() AND public.is_approved_teacher()
-    )
+    OR public.is_class_teacher(class_members.class_id)
   )
   WITH CHECK (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (
-      SELECT 1 FROM classes c
-      WHERE c.id = class_members.class_id AND c.teacher_id = public.current_app_user_id() AND public.is_approved_teacher()
-    )
+    OR public.is_class_teacher(class_members.class_id)
   );
 
 -- Documents, Practice Quizzes, Practice Attempts: strict owner or admin
@@ -584,17 +682,7 @@ CREATE POLICY exams_select ON exams FOR SELECT
     OR (
       status = 'published' AND (
         assign_all = 1
-        OR EXISTS (
-          SELECT 1 FROM exam_assignments ea
-          WHERE ea.exam_id = exams.id
-            AND (
-              ea.student_id = public.current_app_user_id()
-              OR EXISTS (
-                SELECT 1 FROM class_members cm
-                WHERE cm.class_id = ea.class_id AND cm.student_id = public.current_app_user_id() AND cm.status = 'active'
-              )
-            )
-        )
+        OR public.is_exam_assigned_student(exams.id)
       )
     )
   );
@@ -610,28 +698,19 @@ CREATE POLICY exam_assignments_select ON exam_assignments FOR SELECT
   USING (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (
-      SELECT 1 FROM class_members cm
-      WHERE cm.class_id = exam_assignments.class_id AND cm.student_id = public.current_app_user_id() AND cm.status = 'active'
-    )
-    OR EXISTS (
-      SELECT 1 FROM exams e WHERE e.id = exam_assignments.exam_id AND e.teacher_id = public.current_app_user_id()
-    )
+    OR (class_id IS NOT NULL AND public.is_class_member(exam_assignments.class_id))
+    OR public.is_exam_teacher(exam_assignments.exam_id)
   );
 
 DROP POLICY IF EXISTS exam_assignments_teacher_write ON exam_assignments;
 CREATE POLICY exam_assignments_teacher_write ON exam_assignments FOR ALL
   USING (
     public.current_app_role() = 'admin'
-    OR EXISTS (
-      SELECT 1 FROM exams e WHERE e.id = exam_assignments.exam_id AND e.teacher_id = public.current_app_user_id() AND public.is_approved_teacher()
-    )
+    OR (public.is_exam_teacher(exam_assignments.exam_id) AND public.is_approved_teacher())
   )
   WITH CHECK (
     public.current_app_role() = 'admin'
-    OR EXISTS (
-      SELECT 1 FROM exams e WHERE e.id = exam_assignments.exam_id AND e.teacher_id = public.current_app_user_id() AND public.is_approved_teacher()
-    )
+    OR (public.is_exam_teacher(exam_assignments.exam_id) AND public.is_approved_teacher())
   );
 
 -- Attempts, Answers, Results, Evaluations, Activity Logs
@@ -640,24 +719,25 @@ CREATE POLICY exam_attempts_access ON exam_attempts FOR ALL
   USING (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (SELECT 1 FROM exams e WHERE e.id = exam_attempts.exam_id AND e.teacher_id = public.current_app_user_id())
+    OR public.is_exam_teacher(exam_attempts.exam_id)
   )
   WITH CHECK (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (SELECT 1 FROM exams e WHERE e.id = exam_attempts.exam_id AND e.teacher_id = public.current_app_user_id())
+    OR public.is_exam_teacher(exam_attempts.exam_id)
   );
 
 DROP POLICY IF EXISTS student_answers_access ON student_answers;
 CREATE POLICY student_answers_access ON student_answers FOR ALL
   USING (
     public.current_app_role() = 'admin'
-    OR EXISTS (
-      SELECT 1 FROM exam_attempts ea
-      JOIN exams e ON e.id = ea.exam_id
-      WHERE ea.id = student_answers.attempt_id
-        AND (ea.student_id = public.current_app_user_id() OR e.teacher_id = public.current_app_user_id())
-    )
+    OR public.is_attempt_student(student_answers.attempt_id)
+    OR public.is_attempt_teacher(student_answers.attempt_id)
+  )
+  WITH CHECK (
+    public.current_app_role() = 'admin'
+    OR public.is_attempt_student(student_answers.attempt_id)
+    OR public.is_attempt_teacher(student_answers.attempt_id)
   );
 
 DROP POLICY IF EXISTS results_access ON results;
@@ -665,7 +745,7 @@ CREATE POLICY results_access ON results FOR SELECT
   USING (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (SELECT 1 FROM exams e WHERE e.id = results.exam_id AND e.teacher_id = public.current_app_user_id())
+    OR public.is_exam_teacher(results.exam_id)
   );
 
 DROP POLICY IF EXISTS evaluations_access ON evaluations;
@@ -673,7 +753,7 @@ CREATE POLICY evaluations_access ON evaluations FOR ALL
   USING (
     public.current_app_role() = 'admin'
     OR teacher_id = public.current_app_user_id()
-    OR EXISTS (SELECT 1 FROM exam_attempts ea WHERE ea.id = evaluations.attempt_id AND ea.student_id = public.current_app_user_id())
+    OR public.is_attempt_student(evaluations.attempt_id)
   );
 
 DROP POLICY IF EXISTS activity_logs_access ON activity_logs;
@@ -681,15 +761,15 @@ CREATE POLICY activity_logs_access ON activity_logs FOR ALL
   USING (
     public.current_app_role() = 'admin'
     OR student_id = public.current_app_user_id()
-    OR EXISTS (SELECT 1 FROM exams e WHERE e.id = activity_logs.exam_id AND e.teacher_id = public.current_app_user_id())
+    OR public.is_exam_teacher(activity_logs.exam_id)
   );
 
--- Questions & Options (teacher owner or admin)
+-- Questions & Options (teacher owner or admin; students receive sanitized questions only via backend API)
 DROP POLICY IF EXISTS questions_access ON questions;
 CREATE POLICY questions_access ON questions FOR SELECT
   USING (
     public.current_app_role() = 'admin'
-    OR EXISTS (SELECT 1 FROM exams e WHERE e.id = questions.exam_id AND e.teacher_id = public.current_app_user_id())
+    OR public.is_exam_teacher(questions.exam_id)
   );
 
 DROP POLICY IF EXISTS question_options_access ON question_options;
@@ -711,3 +791,13 @@ DROP POLICY IF EXISTS admin_audit_logs_admin ON admin_audit_logs;
 CREATE POLICY admin_audit_logs_admin ON admin_audit_logs FOR ALL
   USING (public.current_app_role() = 'admin')
   WITH CHECK (public.current_app_role() = 'admin');
+
+-- =========================================================================
+-- 8. SCHEMA & ROLE GRANTS (Ensures service_role never hits permission denied)
+-- =========================================================================
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO postgres, service_role;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.profiles TO authenticated;
+

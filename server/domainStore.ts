@@ -4,6 +4,7 @@ import {
   computeTeacherClassAnalytics,
   generateEnrollmentCode,
   normalizeEnrollmentCode,
+  normalizeTwoRole,
   type ClassSubmissionMetric,
   type StudentProgressExamInput,
   type StudentProgressPracticeInput,
@@ -15,7 +16,6 @@ import type {
   ClassRecord,
   OfficialExamSummary,
   PlatformSettings,
-  RequestLogRecord,
   StudentProgressSummary,
   TeacherApprovalStatus,
   UserProfile,
@@ -35,7 +35,7 @@ function isValidHttpUrlOrEmpty(val: string): boolean {
 
 export class DomainStore {
   // =========================================================================
-  // SETTINGS & AUDIT LOGS
+  // PLATFORM SETTINGS
   // =========================================================================
   async getPlatformSettings(): Promise<PlatformSettings> {
     const defaults: PlatformSettings = {
@@ -89,7 +89,7 @@ export class DomainStore {
           : current.requireTeacherApproval,
       defaultMaxTabSwitches:
         typeof patch.defaultMaxTabSwitches === 'number' && Number.isFinite(patch.defaultMaxTabSwitches)
-          ? Math.min(Math.max(0, Math.floor(patch.defaultMaxTabSwitches)), 10)
+          ? Math.max(0, Math.min(10, Math.round(patch.defaultMaxTabSwitches)))
           : current.defaultMaxTabSwitches,
       allowPublicPractice:
         typeof patch.allowPublicPractice === 'boolean'
@@ -106,14 +106,17 @@ export class DomainStore {
     ];
 
     if (store.provider === 'supabase') {
-      const sb = store.getSupa();
-      await sb.from('platform_settings').upsert(
-        entries.map(([key, value]) => ({ key, value, updated_by: adminId, updated_at: now })),
+      await store.getSupa().from('platform_settings').upsert(
+        entries.map(([key, value]) => ({
+          key,
+          value,
+          updated_by: adminId,
+          updated_at: now,
+        })),
         { onConflict: 'key' }
       );
     } else {
-      const db = store.getSql();
-      const stmt = db.prepare(
+      const stmt = store.getSql().prepare(
         `INSERT INTO platform_settings (key, value, updated_by, updated_at)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`
@@ -128,224 +131,10 @@ export class DomainStore {
       action: 'update_platform_settings',
       targetType: 'platform_settings',
       targetId: 'global',
-      details: JSON.stringify(next),
+      details: `Updated platform settings (teacherReg=${next.allowTeacherRegistration}, teacherApproval=${next.requireTeacherApproval}, maxTabSwitches=${next.defaultMaxTabSwitches}, publicPractice=${next.allowPublicPractice})`,
     });
 
     return next;
-  }
-
-  async recordAdminAuditLog(entry: {
-    adminId: string | null;
-    action: string;
-    targetType: string;
-    targetId: string;
-    details: string;
-  }): Promise<void> {
-    try {
-      const id = `audit_${crypto.randomUUID()}`;
-      const createdAt = new Date().toISOString();
-      if (store.provider === 'supabase') {
-        await store.getSupa().from('admin_audit_logs').insert({
-          id,
-          admin_id: entry.adminId,
-          action: entry.action,
-          target_type: entry.targetType,
-          target_id: entry.targetId,
-          details: entry.details.slice(0, 500),
-          created_at: createdAt,
-        });
-        return;
-      }
-      store
-        .getSql()
-        .prepare(
-          `INSERT INTO admin_audit_logs (id, admin_id, action, target_type, target_id, details, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          id,
-          entry.adminId,
-          entry.action,
-          entry.targetType,
-          entry.targetId,
-          entry.details.slice(0, 500),
-          createdAt
-        );
-    } catch {
-      // Non-blocking audit log
-    }
-  }
-
-  async listAdminAuditLogs(limit = 100): Promise<AdminAuditLogRecord[]> {
-    if (store.provider === 'supabase') {
-      const sb = store.getSupa();
-      const { data: logs, error } = await sb
-        .from('admin_audit_logs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(limit);
-      if (error) throw new Error(error.message);
-      const adminIds = Array.from(new Set((logs || []).map((l) => l.admin_id).filter(Boolean).map(String)));
-      const { data: admins } =
-        adminIds.length > 0
-          ? await sb.from('users').select('id, name').in('id', adminIds)
-          : { data: [] };
-      const adminMap = new Map((admins || []).map((a) => [String(a.id), String(a.name)]));
-      return (logs || []).map((l) => ({
-        id: String(l.id),
-        adminId: l.admin_id ? String(l.admin_id) : null,
-        adminName: l.admin_id ? adminMap.get(String(l.admin_id)) || 'Admin' : 'System',
-        action: String(l.action),
-        targetType: String(l.target_type),
-        targetId: String(l.target_id),
-        details: String(l.details || ''),
-        createdAt: String(l.created_at),
-      }));
-    }
-
-    const rows = store
-      .getSql()
-      .prepare(
-        `SELECT al.*, u.name as admin_name
-         FROM admin_audit_logs al
-         LEFT JOIN users u ON u.id = al.admin_id
-         ORDER BY al.created_at DESC
-         LIMIT ?`
-      )
-      .all(limit);
-    return rows.map((l) => ({
-      id: String(l.id),
-      adminId: l.admin_id ? String(l.admin_id) : null,
-      adminName: l.admin_name ? String(l.admin_name) : 'System',
-      action: String(l.action),
-      targetType: String(l.target_type),
-      targetId: String(l.target_id),
-      details: String(l.details || ''),
-      createdAt: String(l.created_at),
-    }));
-  }
-
-  // =========================================================================
-  // ADMIN BOOTSTRAP, DEMO & PASSWORD RESET
-  // =========================================================================
-  async countAdminUsers(): Promise<number> {
-    if (store.provider === 'supabase') {
-      const { count, error } = await store
-        .getSupa()
-        .from('users')
-        .select('id', { count: 'exact', head: true })
-        .eq('role', 'admin');
-      if (error) throw new Error(error.message);
-      return count || 0;
-    }
-    const row = store
-      .getSql()
-      .prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'")
-      .get() as { c: number };
-    return Number(row.c);
-  }
-
-  async claimInitialAdmin(input: {
-    id: string;
-    name: string;
-    email: string;
-    passwordHash: string;
-    institution?: string;
-    createdAt: string;
-  }): Promise<{ ok: true; user: UserProfile } | { ok: false; error: string; status: number }> {
-    const cleanEmail = input.email.trim().toLowerCase();
-    const adminCount = await this.countAdminUsers();
-    if (adminCount > 0) {
-      return {
-        ok: false,
-        error: 'An Admin account already exists. Ask an existing Admin or enter the Admin Setup Secret.',
-        status: 403,
-      };
-    }
-
-    const existing = await store.findUserByEmail(cleanEmail);
-    if (existing) {
-      return { ok: false, error: 'An account with this email already exists.', status: 409 };
-    }
-
-    if (store.provider === 'sqlite') {
-      // Atomic check-and-insert under SQLite IMMEDIATE transaction
-      const db = store.getSql();
-      db.exec('BEGIN IMMEDIATE');
-      try {
-        const countRow = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as { c: number };
-        if (Number(countRow.c) > 0) {
-          db.exec('ROLLBACK');
-          return {
-            ok: false,
-            error: 'An Admin account already exists.',
-            status: 403,
-          };
-        }
-        db.exec('COMMIT');
-      } catch (err) {
-        try {
-          db.exec('ROLLBACK');
-        } catch {
-          // ignore
-        }
-        throw err;
-      }
-    }
-
-    await store.createUser({
-      id: input.id,
-      name: input.name,
-      email: cleanEmail,
-      password_hash: input.passwordHash,
-      role: 'admin',
-      institution: input.institution || 'ExamAI Administration',
-      account_status: 'active',
-      created_at: input.createdAt,
-    });
-
-    await this.recordAdminAuditLog({
-      adminId: input.id,
-      action: 'claim_initial_admin',
-      targetType: 'user',
-      targetId: input.id,
-      details: `First administrator claimed (${cleanEmail})`,
-    });
-
-    const user = (await store.findUserById(input.id))!;
-    return { ok: true, user };
-  }
-
-  async findOrCreateDemoAdmin(): Promise<UserProfile> {
-    const email = 'admin@exampilot.edu';
-    const existing = await store.findUserByEmail(email);
-    if (existing) {
-      const profile = await store.findUserById(existing.id);
-      if (profile) return profile;
-    }
-
-    const now = new Date().toISOString();
-    const id = 'usr_admin_demo';
-    await store.createUser({
-      id,
-      name: 'Alex Morgan (Demo Admin)',
-      email,
-      password_hash: hashPassword('Admin123!'),
-      role: 'admin',
-      institution: 'ExamAI Administration',
-      account_status: 'active',
-      created_at: now,
-    });
-
-    await this.recordAdminAuditLog({
-      adminId: id,
-      action: 'demo_admin_provisioned',
-      targetType: 'user',
-      targetId: id,
-      details: 'Demo Admin account initialized for quick workspace preview',
-    });
-
-    return (await store.findUserById(id))!;
   }
 
   async createPasswordResetToken(userId: string, tokenHash: string, expiresAt: string): Promise<void> {
@@ -489,8 +278,193 @@ export class DomainStore {
   }
 
   // =========================================================================
-  // SUPABASE AUTH USER SYNC
+  // ADMIN BOOTSTRAP, AUDIT LOGS & SUPABASE AUTH USER SYNC
   // =========================================================================
+  async countAdminUsers(): Promise<number> {
+    if (store.provider === 'supabase') {
+      const { count, error } = await store
+        .getSupa()
+        .from('users')
+        .select('id', { count: 'exact', head: true })
+        .eq('role', 'admin');
+      if (error) throw new Error(error.message);
+      return count || 0;
+    }
+    const row = store
+      .getSql()
+      .prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'")
+      .get() as { c: number } | undefined;
+    return Number(row?.c || 0);
+  }
+
+  async recordAdminAuditLog(input: {
+    adminId: string | null;
+    action: string;
+    targetType: string;
+    targetId: string;
+    details?: string;
+  }): Promise<void> {
+    const id = `aud_${crypto.randomUUID()}`;
+    const createdAt = new Date().toISOString();
+    const details = (input.details || '').slice(0, 500);
+    try {
+      if (store.provider === 'supabase') {
+        await store.getSupa().from('admin_audit_logs').insert({
+          id,
+          admin_id: input.adminId,
+          action: input.action,
+          target_type: input.targetType,
+          target_id: input.targetId,
+          details,
+          created_at: createdAt,
+        });
+        return;
+      }
+      store
+        .getSql()
+        .prepare(
+          `INSERT INTO admin_audit_logs (id, admin_id, action, target_type, target_id, details, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(id, input.adminId, input.action, input.targetType, input.targetId, details, createdAt);
+    } catch {
+      // Non-blocking audit logging
+    }
+  }
+
+  async listAdminAuditLogs(limit = 100): Promise<AdminAuditLogRecord[]> {
+    const safeLimit = Math.max(1, Math.min(500, limit));
+    if (store.provider === 'supabase') {
+      const sb = store.getSupa();
+      const { data: logs, error } = await sb
+        .from('admin_audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(safeLimit);
+      if (error) throw new Error(error.message);
+      const adminIds = Array.from(
+        new Set((logs || []).map((l) => (l.admin_id ? String(l.admin_id) : '')).filter(Boolean))
+      );
+      const adminMap = new Map<string, string>();
+      if (adminIds.length > 0) {
+        const { data: admins } = await sb.from('users').select('id, name').in('id', adminIds);
+        for (const a of admins || []) {
+          adminMap.set(String(a.id), String(a.name));
+        }
+      }
+      return (logs || []).map((l) => ({
+        id: String(l.id),
+        adminId: l.admin_id ? String(l.admin_id) : null,
+        adminName: l.admin_id ? adminMap.get(String(l.admin_id)) || 'Admin' : 'System',
+        action: String(l.action),
+        targetType: String(l.target_type),
+        targetId: String(l.target_id),
+        details: String(l.details || ''),
+        createdAt: String(l.created_at),
+      }));
+    }
+
+    const rows = store
+      .getSql()
+      .prepare(
+        `SELECT a.*, u.name as admin_name
+         FROM admin_audit_logs a
+         LEFT JOIN users u ON u.id = a.admin_id
+         ORDER BY a.created_at DESC
+         LIMIT ?`
+      )
+      .all(safeLimit);
+
+    return rows.map((l) => ({
+      id: String(l.id),
+      adminId: l.admin_id ? String(l.admin_id) : null,
+      adminName: l.admin_name ? String(l.admin_name) : l.admin_id ? 'Admin' : 'System',
+      action: String(l.action),
+      targetType: String(l.target_type),
+      targetId: String(l.target_id),
+      details: String(l.details || ''),
+      createdAt: String(l.created_at),
+    }));
+  }
+
+  async claimInitialAdmin(input: {
+    id: string;
+    name: string;
+    email: string;
+    passwordHash: string;
+    institution?: string;
+    createdAt: string;
+  }): Promise<{ ok: true; user: UserProfile } | { ok: false; status: number; error: string }> {
+    const cleanEmail = input.email.trim().toLowerCase();
+    const adminCount = await this.countAdminUsers();
+    if (adminCount > 0) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'An Admin account already exists. Sign in as an Admin or provide the Admin Setup Secret.',
+      };
+    }
+
+    const existing = await store.findUserByEmail(cleanEmail);
+    if (existing) {
+      return { ok: false, status: 409, error: 'An account with this email already exists.' };
+    }
+
+    await store.createUser({
+      id: input.id,
+      name: input.name,
+      email: cleanEmail,
+      password_hash: input.passwordHash,
+      role: 'admin',
+      institution: input.institution || 'ExamAI Administration',
+      account_status: 'active',
+      created_at: input.createdAt,
+    });
+
+    await this.recordAdminAuditLog({
+      adminId: input.id,
+      action: 'claim_initial_admin',
+      targetType: 'user',
+      targetId: input.id,
+      details: `Claimed initial Admin account (${cleanEmail})`,
+    });
+
+    const created = await store.findUserById(input.id);
+    if (!created) {
+      return { ok: false, status: 500, error: 'Unable to load newly claimed Admin account.' };
+    }
+    return { ok: true, user: created };
+  }
+
+  async findOrCreateDemoAdmin(): Promise<UserProfile | null> {
+    if (
+      process.env.DISABLE_DEMO_LOGIN === 'true' ||
+      process.env.ENABLE_DEMO_LOGIN !== 'true'
+    ) {
+      return null;
+    }
+
+    const existingById = await store.findUserById('usr_admin_demo');
+    if (existingById) return existingById;
+
+    const existingByEmail = await store.findUserByEmail('admin@exampilot.edu');
+    if (existingByEmail) return store.findUserById(existingByEmail.id);
+
+    const now = new Date().toISOString();
+    await store.createUser({
+      id: 'usr_admin_demo',
+      name: 'Alex Mercer (Admin)',
+      email: 'admin@exampilot.edu',
+      password_hash: hashPassword('Admin123!'),
+      role: 'admin',
+      institution: 'ExamAI Administration',
+      account_status: 'active',
+      created_at: now,
+    });
+
+    return store.findUserById('usr_admin_demo');
+  }
+
   async syncSupabaseUser(input: {
     authUserId: string;
     email: string;
@@ -521,20 +495,33 @@ export class DomainStore {
     }
 
     const settings = await this.getPlatformSettings();
-    let role: UserRole = input.requestedRole || 'student';
+    let role: UserRole = normalizeTwoRole(input.requestedRole);
 
-    if (role === 'admin') {
+    if (input.requestedRole === 'admin') {
       const adminCount = await this.countAdminUsers();
-      const configuredSecret = (process.env.ADMIN_BOOTSTRAP_SECRET || '').trim();
-      const validSecret =
-        configuredSecret.length > 0 &&
-        typeof input.setupSecret === 'string' &&
-        input.setupSecret.trim() === configuredSecret;
-      if (adminCount > 0 && !validSecret) {
-        return { error: 'Admin account creation requires a valid Admin Setup Secret.', status: 403 };
+      if (adminCount > 0) {
+        const expectedSecret = (process.env.ADMIN_BOOTSTRAP_SECRET || '').trim();
+        const providedSecret = (input.setupSecret || '').trim();
+        if (!expectedSecret) {
+          return {
+            error:
+              'An Admin account already exists and ADMIN_BOOTSTRAP_SECRET is not configured on the server.',
+            status: 403,
+          };
+        }
+        const aBuf = Buffer.from(providedSecret);
+        const bBuf = Buffer.from(expectedSecret);
+        const secretValid = aBuf.length === bBuf.length && crypto.timingSafeEqual(aBuf, bBuf);
+        if (!secretValid) {
+          return { error: 'Invalid Admin Setup Secret.', status: 403 };
+        }
       }
+      role = 'admin';
     } else if (role === 'teacher' && !settings.allowTeacherRegistration) {
-      return { error: 'Teacher registration is currently disabled by administrator.', status: 403 };
+      return {
+        error: 'Self-service teacher registration is currently disabled by administrator.',
+        status: 403,
+      };
     }
 
     const userId = `usr_${crypto.randomUUID()}`;
@@ -562,6 +549,16 @@ export class DomainStore {
           }
         : undefined
     );
+
+    if (role === 'admin') {
+      await this.recordAdminAuditLog({
+        adminId: userId,
+        action: 'sync_supabase_admin',
+        targetType: 'user',
+        targetId: userId,
+        details: `Provisioned Supabase Admin account (${cleanEmail})`,
+      });
+    }
 
     const created = await store.findUserById(userId);
     if (!created) return { error: 'Unable to provision synchronized account.', status: 500 };
@@ -1332,30 +1329,139 @@ export class DomainStore {
   }
 
   // =========================================================================
-  // ADMIN CONSOLE OPERATIONS
+  // ADMIN CONSOLE QUERIES & GOVERNANCE
   // =========================================================================
-  async adminListUsers(filters?: {
+  async getDatabaseOverview(): Promise<{
+    provider: 'sqlite' | 'supabase';
+    tables: Array<{ name: string; rows: number }>;
+  }> {
+    const tableNames = [
+      'users',
+      'profiles',
+      'teacher_profiles',
+      'classes',
+      'class_members',
+      'documents',
+      'practice_quizzes',
+      'practice_attempts',
+      'question_bank',
+      'exams',
+      'exam_assignments',
+      'questions',
+      'exam_attempts',
+      'results',
+      'evaluations',
+      'activity_logs',
+      'request_logs',
+      'admin_audit_logs',
+      'platform_settings',
+    ];
+
+    if (store.provider === 'supabase') {
+      const sb = store.getSupa();
+      const tables = await Promise.all(
+        tableNames.map(async (name) => {
+          try {
+            const { count } = await sb.from(name).select('*', { count: 'exact', head: true });
+            return { name, rows: count || 0 };
+          } catch {
+            return { name, rows: 0 };
+          }
+        })
+      );
+      return { provider: 'supabase', tables };
+    }
+
+    const db = store.getSql();
+    const tables = tableNames.map((name) => {
+      try {
+        const row = db.prepare(`SELECT COUNT(*) as c FROM ${name}`).get() as { c: number } | undefined;
+        return { name, rows: Number(row?.c || 0) };
+      } catch {
+        return { name, rows: 0 };
+      }
+    });
+    return { provider: 'sqlite', tables };
+  }
+
+  async getAdminOverview() {
+    const [usage, settings, database, recentAuditLogs, results] = await Promise.all([
+      store.getUsageOverview(),
+      this.getPlatformSettings(),
+      this.getDatabaseOverview(),
+      this.listAdminAuditLogs(15),
+      this.adminListResults(),
+    ]);
+
+    const tableCountMap = new Map(database.tables.map((t) => [t.name, t.rows]));
+    const users = usage.users;
+    const totalStudents = users.filter((u) => u.role === 'student').length;
+    const totalTeachers = users.filter((u) => u.role === 'teacher').length;
+    const pendingTeachers = users.filter(
+      (u) => u.role === 'teacher' && (u.teacherProfile?.approvalStatus || 'pending') !== 'approved'
+    ).length;
+    const totalAdmins = users.filter((u) => u.role === 'admin').length;
+
+    const evaluatedResults = results.filter((r) => r.status === 'evaluated');
+    const avgPlatformScore =
+      evaluatedResults.length > 0
+        ? Math.round(
+            (evaluatedResults.reduce((acc, r) => acc + Number(r.percentage || 0), 0) /
+              evaluatedResults.length) *
+              10
+          ) / 10
+        : null;
+    const platformPassRate =
+      evaluatedResults.length > 0
+        ? Math.round(
+            (evaluatedResults.filter((r) => Boolean(r.passed)).length / evaluatedResults.length) * 1000
+          ) / 10
+        : null;
+
+    return {
+      dbProvider: store.provider,
+      summary: {
+        totalUsers: users.length,
+        totalStudents,
+        totalTeachers,
+        pendingTeachers,
+        totalAdmins,
+        totalClasses: tableCountMap.get('classes') || 0,
+        totalExams: tableCountMap.get('exams') || 0,
+        totalAttempts: tableCountMap.get('exam_attempts') || 0,
+        totalResults: tableCountMap.get('results') || 0,
+        totalDocuments: usage.summary.totalDocuments,
+        totalAiGenerations: usage.summary.totalAiGenerations,
+        totalRequests: usage.summary.totalRequests,
+        avgPlatformScore,
+        platformPassRate,
+      },
+      settings,
+      database,
+      recentAuditLogs,
+      recentRequests: usage.logs.slice(0, 20),
+    };
+  }
+
+  async adminListUsers(filters: {
     role?: string;
     status?: string;
     search?: string;
   }): Promise<UserProfile[]> {
-    let users = await store.listAllUsers();
-    if (filters?.role && filters.role !== 'all') {
-      users = users.filter((u) => u.role === filters.role);
-    }
-    if (filters?.status && filters.status !== 'all') {
-      users = users.filter((u) => (u.accountStatus || 'active') === filters.status);
-    }
-    if (filters?.search && filters.search.trim()) {
-      const q = filters.search.trim().toLowerCase();
-      users = users.filter(
-        (u) =>
-          u.name.toLowerCase().includes(q) ||
-          u.email.toLowerCase().includes(q) ||
-          (u.institution || '').toLowerCase().includes(q)
-      );
-    }
-    return users;
+    const all = await store.listAllUsers();
+    const roleFilter = (filters.role || 'all').toLowerCase();
+    const statusFilter = (filters.status || 'all').toLowerCase();
+    const search = (filters.search || '').trim().toLowerCase();
+
+    return all.filter((u) => {
+      if (roleFilter !== 'all' && u.role !== roleFilter) return false;
+      if (statusFilter !== 'all' && (u.accountStatus || 'active') !== statusFilter) return false;
+      if (search) {
+        const hay = `${u.name} ${u.email} ${u.institution || ''}`.toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
   }
 
   async adminCreateUser(input: {
@@ -1368,32 +1474,34 @@ export class DomainStore {
     bio?: string;
     approvalStatus?: TeacherApprovalStatus;
     adminId: string;
-  }): Promise<{ ok: true; user: UserProfile } | { ok: false; error: string; status: number }> {
+  }): Promise<{ ok: true; user: UserProfile } | { ok: false; status: number; error: string }> {
     const cleanEmail = input.email.trim().toLowerCase();
     const existing = await store.findUserByEmail(cleanEmail);
     if (existing) {
-      return { ok: false, error: 'An account with this email already exists.', status: 409 };
+      return { ok: false, status: 409, error: 'An account with this email already exists.' };
     }
-    const id = `usr_${crypto.randomUUID()}`;
+
+    const userId = `usr_${crypto.randomUUID()}`;
     const now = new Date().toISOString();
+    const approvalStatus: TeacherApprovalStatus = input.approvalStatus || 'approved';
 
     await store.createUser(
       {
-        id,
-        name: input.name.trim(),
+        id: userId,
+        name: input.name.trim().slice(0, 80),
         email: cleanEmail,
         password_hash: input.passwordHash,
         role: input.role,
-        institution: (input.institution || '').trim(),
+        institution: (input.institution || '').trim().slice(0, 120),
         account_status: 'active',
         created_at: now,
       },
       input.role === 'teacher'
         ? {
-            subject: input.subject || '',
-            bio: input.bio || '',
-            approvalStatus: input.approvalStatus || 'approved',
-            approvedBy: (input.approvalStatus || 'approved') === 'approved' ? input.adminId : null,
+            subject: (input.subject || '').trim().slice(0, 120),
+            bio: (input.bio || '').trim().slice(0, 800),
+            approvalStatus,
+            approvedBy: approvalStatus === 'approved' ? input.adminId : null,
           }
         : undefined
     );
@@ -1402,16 +1510,19 @@ export class DomainStore {
       adminId: input.adminId,
       action: 'admin_create_user',
       targetType: 'user',
-      targetId: id,
+      targetId: userId,
       details: `Created ${input.role} user ${cleanEmail}`,
     });
 
-    const user = (await store.findUserById(id))!;
+    const user = await store.findUserById(userId);
+    if (!user) {
+      return { ok: false, status: 500, error: 'Failed to load created user.' };
+    }
     return { ok: true, user };
   }
 
   async adminUpdateUser(
-    targetUserId: string,
+    targetId: string,
     patch: {
       name?: string;
       role?: UserRole;
@@ -1423,84 +1534,109 @@ export class DomainStore {
       rejectionReason?: string;
     },
     adminId: string
-  ): Promise<{ ok: true; user: UserProfile } | { ok: false; error: string; status: number }> {
-    const target = await store.findUserById(targetUserId);
-    if (!target) {
-      return { ok: false, error: 'User not found.', status: 404 };
+  ): Promise<{ ok: true; user: UserProfile } | { ok: false; status: number; error: string }> {
+    const existing = await store.findUserById(targetId);
+    if (!existing) {
+      return { ok: false, status: 404, error: 'User not found.' };
     }
 
-    if (targetUserId === adminId && patch.accountStatus && patch.accountStatus !== 'active') {
-      return { ok: false, error: 'You cannot suspend or deactivate your own administrator account.', status: 400 };
-    }
-    if (targetUserId === adminId && patch.role && patch.role !== 'admin') {
-      return { ok: false, error: 'You cannot remove your own administrator role.', status: 400 };
+    if (targetId === adminId) {
+      if (patch.role && patch.role !== 'admin') {
+        return { ok: false, status: 400, error: 'You cannot demote your own administrator role.' };
+      }
+      if (patch.accountStatus && patch.accountStatus !== 'active') {
+        return { ok: false, status: 400, error: 'You cannot suspend or deactivate your own account.' };
+      }
     }
 
-    const nextName =
-      typeof patch.name === 'string' && patch.name.trim().length >= 2 ? patch.name.trim().slice(0, 80) : target.name;
-    const nextRole: UserRole =
-      patch.role && ['student', 'teacher', 'admin'].includes(patch.role) ? patch.role : target.role;
-    const nextStatus: AccountStatus =
-      patch.accountStatus && ['active', 'deactivated', 'suspended'].includes(patch.accountStatus)
-        ? patch.accountStatus
-        : target.accountStatus || 'active';
-    const nextInst =
-      typeof patch.institution === 'string' ? patch.institution.trim().slice(0, 120) : target.institution || '';
+    if (
+      existing.role === 'admin' &&
+      ((patch.role && patch.role !== 'admin') || (patch.accountStatus && patch.accountStatus !== 'active'))
+    ) {
+      const adminCount = await this.countAdminUsers();
+      if (adminCount <= 1) {
+        return { ok: false, status: 400, error: 'At least one active administrator account must remain.' };
+      }
+    }
+
+    const name = typeof patch.name === 'string' && patch.name.trim().length >= 2 ? patch.name.trim().slice(0, 80) : existing.name;
+    const role: UserRole = patch.role || existing.role;
+    const accountStatus: AccountStatus = patch.accountStatus || existing.accountStatus || 'active';
+    const institution =
+      typeof patch.institution === 'string' ? patch.institution.trim().slice(0, 120) : existing.institution || '';
     const now = new Date().toISOString();
 
     if (store.provider === 'supabase') {
       const sb = store.getSupa();
       await sb
         .from('users')
-        .update({ name: nextName, role: nextRole, account_status: nextStatus, institution: nextInst, updated_at: now })
-        .eq('id', targetUserId);
+        .update({ name, role, account_status: accountStatus, institution, updated_at: now })
+        .eq('id', targetId);
       await sb
         .from('profiles')
-        .update({ full_name: nextName, role: nextRole, account_status: nextStatus, institution: nextInst, updated_at: now })
-        .eq('id', targetUserId);
-      if (nextRole === 'teacher') {
+        .update({ full_name: name, role, account_status: accountStatus, institution, updated_at: now })
+        .eq('id', targetId);
+
+      if (role === 'teacher') {
+        const approvalStatus = patch.approvalStatus || existing.teacherProfile?.approvalStatus || 'approved';
         await sb.from('teacher_profiles').upsert(
           {
-            id: `tp_${targetUserId}`,
-            user_id: targetUserId,
-            subject: patch.subject ?? target.teacherProfile?.subject ?? '',
-            institution: nextInst,
-            bio: patch.bio ?? target.teacherProfile?.bio ?? '',
-            approval_status: patch.approvalStatus ?? target.teacherProfile?.approvalStatus ?? 'approved',
-            approved_by:
-              (patch.approvalStatus ?? target.teacherProfile?.approvalStatus) === 'approved' ? adminId : null,
-            approved_at:
-              (patch.approvalStatus ?? target.teacherProfile?.approvalStatus) === 'approved' ? now : null,
-            rejection_reason: patch.rejectionReason ?? target.teacherProfile?.rejectionReason ?? '',
-            created_at: target.teacherProfile?.createdAt || now,
+            id: `tp_${targetId}`,
+            user_id: targetId,
+            subject:
+              typeof patch.subject === 'string'
+                ? patch.subject.trim().slice(0, 120)
+                : existing.teacherProfile?.subject || '',
+            institution,
+            bio:
+              typeof patch.bio === 'string'
+                ? patch.bio.trim().slice(0, 800)
+                : existing.teacherProfile?.bio || '',
+            approval_status: approvalStatus,
+            approved_by: approvalStatus === 'approved' ? adminId : existing.teacherProfile?.approvedBy || null,
+            approved_at: approvalStatus === 'approved' ? existing.teacherProfile?.approvedAt || now : null,
+            rejection_reason:
+              typeof patch.rejectionReason === 'string'
+                ? patch.rejectionReason.trim().slice(0, 300)
+                : existing.teacherProfile?.rejectionReason || '',
+            created_at: existing.teacherProfile?.createdAt || now,
             updated_at: now,
           },
           { onConflict: 'user_id' }
         );
       }
-      if (nextStatus !== 'active') {
-        await sb.from('sessions').delete().eq('user_id', targetUserId);
-      }
     } else {
       const db = store.getSql();
       db.prepare('UPDATE users SET name = ?, role = ?, account_status = ?, institution = ?, updated_at = ? WHERE id = ?').run(
-        nextName,
-        nextRole,
-        nextStatus,
-        nextInst,
+        name,
+        role,
+        accountStatus,
+        institution,
         now,
-        targetUserId
+        targetId
       );
       db.prepare('UPDATE profiles SET full_name = ?, role = ?, account_status = ?, institution = ?, updated_at = ? WHERE id = ?').run(
-        nextName,
-        nextRole,
-        nextStatus,
-        nextInst,
+        name,
+        role,
+        accountStatus,
+        institution,
         now,
-        targetUserId
+        targetId
       );
-      if (nextRole === 'teacher') {
-        const approvalStatus = patch.approvalStatus ?? target.teacherProfile?.approvalStatus ?? 'approved';
+      if (role === 'teacher') {
+        const approvalStatus = patch.approvalStatus || existing.teacherProfile?.approvalStatus || 'approved';
+        const subject =
+          typeof patch.subject === 'string'
+            ? patch.subject.trim().slice(0, 120)
+            : existing.teacherProfile?.subject || '';
+        const bio =
+          typeof patch.bio === 'string'
+            ? patch.bio.trim().slice(0, 800)
+            : existing.teacherProfile?.bio || '';
+        const rejectionReason =
+          typeof patch.rejectionReason === 'string'
+            ? patch.rejectionReason.trim().slice(0, 300)
+            : existing.teacherProfile?.rejectionReason || '';
         db.prepare(
           `INSERT INTO teacher_profiles (id, user_id, subject, institution, bio, approval_status, approved_by, approved_at, rejection_reason, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1514,21 +1650,18 @@ export class DomainStore {
              rejection_reason = excluded.rejection_reason,
              updated_at = excluded.updated_at`
         ).run(
-          `tp_${targetUserId}`,
-          targetUserId,
-          patch.subject ?? target.teacherProfile?.subject ?? '',
-          nextInst,
-          patch.bio ?? target.teacherProfile?.bio ?? '',
+          `tp_${targetId}`,
+          targetId,
+          subject,
+          institution,
+          bio,
           approvalStatus,
-          approvalStatus === 'approved' ? adminId : null,
-          approvalStatus === 'approved' ? now : null,
-          patch.rejectionReason ?? target.teacherProfile?.rejectionReason ?? '',
-          target.teacherProfile?.createdAt || now,
+          approvalStatus === 'approved' ? adminId : existing.teacherProfile?.approvedBy || null,
+          approvalStatus === 'approved' ? existing.teacherProfile?.approvedAt || now : null,
+          rejectionReason,
+          existing.teacherProfile?.createdAt || now,
           now
         );
-      }
-      if (nextStatus !== 'active') {
-        db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetUserId);
       }
     }
 
@@ -1536,39 +1669,44 @@ export class DomainStore {
       adminId,
       action: 'admin_update_user',
       targetType: 'user',
-      targetId: targetUserId,
-      details: `Updated user ${target.email} (role=${nextRole}, status=${nextStatus})`,
+      targetId,
+      details: `Updated user ${existing.email} (role=${role}, status=${accountStatus})`,
     });
 
-    const updated = (await store.findUserById(targetUserId))!;
+    const updated = await store.findUserById(targetId);
+    if (!updated) {
+      return { ok: false, status: 500, error: 'Failed to reload updated user.' };
+    }
     return { ok: true, user: updated };
   }
 
   async updateTeacherApproval(
-    teacherUserId: string,
+    teacherId: string,
     approvalStatus: TeacherApprovalStatus,
     adminId: string,
     rejectionReason = ''
-  ): Promise<{ ok: true; user: UserProfile } | { ok: false; error: string; status: number }> {
-    const user = await store.findUserById(teacherUserId);
-    if (!user || user.role !== 'teacher') {
-      return { ok: false, error: 'Teacher account not found.', status: 404 };
+  ): Promise<{ ok: true; user: UserProfile } | { ok: false; status: number; error: string }> {
+    const existing = await store.findUserById(teacherId);
+    if (!existing || existing.role !== 'teacher') {
+      return { ok: false, status: 404, error: 'Teacher account not found.' };
     }
+
     const now = new Date().toISOString();
+    const cleanReason = approvalStatus === 'rejected' ? rejectionReason.trim().slice(0, 300) : '';
 
     if (store.provider === 'supabase') {
       await store.getSupa().from('teacher_profiles').upsert(
         {
-          id: `tp_${teacherUserId}`,
-          user_id: teacherUserId,
-          subject: user.teacherProfile?.subject || '',
-          institution: user.institution || '',
-          bio: user.teacherProfile?.bio || '',
+          id: `tp_${teacherId}`,
+          user_id: teacherId,
+          subject: existing.teacherProfile?.subject || '',
+          institution: existing.institution || '',
+          bio: existing.teacherProfile?.bio || '',
           approval_status: approvalStatus,
-          approved_by: approvalStatus === 'approved' ? adminId : null,
+          approved_by: adminId,
           approved_at: approvalStatus === 'approved' ? now : null,
-          rejection_reason: approvalStatus === 'rejected' ? rejectionReason.trim() : '',
-          created_at: user.teacherProfile?.createdAt || now,
+          rejection_reason: cleanReason,
+          created_at: existing.teacherProfile?.createdAt || now,
           updated_at: now,
         },
         { onConflict: 'user_id' }
@@ -1587,44 +1725,50 @@ export class DomainStore {
              updated_at = excluded.updated_at`
         )
         .run(
-          `tp_${teacherUserId}`,
-          teacherUserId,
-          user.teacherProfile?.subject || '',
-          user.institution || '',
-          user.teacherProfile?.bio || '',
+          `tp_${teacherId}`,
+          teacherId,
+          existing.teacherProfile?.subject || '',
+          existing.institution || '',
+          existing.teacherProfile?.bio || '',
           approvalStatus,
-          approvalStatus === 'approved' ? adminId : null,
+          adminId,
           approvalStatus === 'approved' ? now : null,
-          approvalStatus === 'rejected' ? rejectionReason.trim() : '',
-          user.teacherProfile?.createdAt || now,
+          cleanReason,
+          existing.teacherProfile?.createdAt || now,
           now
         );
     }
 
     await this.recordAdminAuditLog({
       adminId,
-      action: `teacher_approval_${approvalStatus}`,
+      action: `teacher_${approvalStatus}`,
       targetType: 'teacher_profile',
-      targetId: teacherUserId,
-      details: `${user.email} -> ${approvalStatus}${rejectionReason ? `: ${rejectionReason}` : ''}`,
+      targetId: teacherId,
+      details: `${approvalStatus === 'approved' ? 'Approved' : approvalStatus === 'rejected' ? 'Rejected' : 'Reset'} teacher ${existing.email}${cleanReason ? `: ${cleanReason}` : ''}`,
     });
 
-    const updated = (await store.findUserById(teacherUserId))!;
+    const updated = await store.findUserById(teacherId);
+    if (!updated) {
+      return { ok: false, status: 500, error: 'Failed to reload teacher profile.' };
+    }
     return { ok: true, user: updated };
   }
 
   async adminListClasses(): Promise<ClassRecord[]> {
     if (store.provider === 'supabase') {
       const sb = store.getSupa();
-      const { data: classes, error } = await sb.from('classes').select('*').order('created_at', { ascending: false });
+      const { data: classes, error } = await sb
+        .from('classes')
+        .select('*')
+        .order('created_at', { ascending: false });
       if (error) throw new Error(error.message);
       if (!classes || classes.length === 0) return [];
-      const tIds = Array.from(new Set(classes.map((c) => String(c.teacher_id))));
-      const cIds = classes.map((c) => String(c.id));
+      const classIds = classes.map((c) => String(c.id));
+      const teacherIds = Array.from(new Set(classes.map((c) => String(c.teacher_id))));
       const [{ data: teachers }, { data: members }, { data: asgs }] = await Promise.all([
-        sb.from('users').select('id, name').in('id', tIds),
-        sb.from('class_members').select('class_id').eq('status', 'active').in('class_id', cIds),
-        sb.from('exam_assignments').select('class_id, exam_id').in('class_id', cIds),
+        sb.from('users').select('id, name').in('id', teacherIds),
+        sb.from('class_members').select('class_id').eq('status', 'active').in('class_id', classIds),
+        sb.from('exam_assignments').select('class_id, exam_id').in('class_id', classIds),
       ]);
       const tMap = new Map((teachers || []).map((t) => [String(t.id), String(t.name)]));
       const memCount = new Map<string, number>();
@@ -1638,7 +1782,7 @@ export class DomainStore {
       return classes.map((c) => ({
         id: String(c.id),
         teacherId: String(c.teacher_id),
-        teacherName: tMap.get(String(c.teacher_id)) || 'Instructor',
+        teacherName: tMap.get(String(c.teacher_id)) || 'Teacher',
         name: String(c.name),
         description: String(c.description || ''),
         subject: String(c.subject || ''),
@@ -1647,6 +1791,7 @@ export class DomainStore {
         memberCount: memCount.get(String(c.id)) || 0,
         assignedExamCount: exSet.get(String(c.id))?.size || 0,
         createdAt: String(c.created_at),
+        updatedAt: c.updated_at ? String(c.updated_at) : null,
       }));
     }
 
@@ -1657,7 +1802,7 @@ export class DomainStore {
           (SELECT COUNT(*) FROM class_members cm WHERE cm.class_id = c.id AND cm.status = 'active') as member_count,
           (SELECT COUNT(DISTINCT ea.exam_id) FROM exam_assignments ea WHERE ea.class_id = c.id) as assigned_exam_count
          FROM classes c
-         JOIN users u ON u.id = c.teacher_id
+         LEFT JOIN users u ON u.id = c.teacher_id
          ORDER BY c.created_at DESC`
       )
       .all();
@@ -1665,7 +1810,7 @@ export class DomainStore {
     return rows.map((c) => ({
       id: String(c.id),
       teacherId: String(c.teacher_id),
-      teacherName: String(c.teacher_name || 'Instructor'),
+      teacherName: String(c.teacher_name || 'Teacher'),
       name: String(c.name),
       description: String(c.description || ''),
       subject: String(c.subject || ''),
@@ -1674,58 +1819,62 @@ export class DomainStore {
       memberCount: Number(c.member_count || 0),
       assignedExamCount: Number(c.assigned_exam_count || 0),
       createdAt: String(c.created_at),
+      updatedAt: c.updated_at ? String(c.updated_at) : null,
     }));
   }
 
   async adminListExams(): Promise<Array<OfficialExamSummary & { teacherEmail?: string }>> {
     if (store.provider === 'supabase') {
       const sb = store.getSupa();
-      const { data: exams, error } = await sb.from('exams').select('*').order('created_at', { ascending: false });
+      const { data: exams, error } = await sb
+        .from('exams')
+        .select('*')
+        .order('created_at', { ascending: false });
       if (error) throw new Error(error.message);
       if (!exams || exams.length === 0) return [];
-      const tIds = Array.from(new Set(exams.map((e) => String(e.teacher_id))));
-      const eIds = exams.map((e) => String(e.id));
+      const examIds = exams.map((e) => String(e.id));
+      const teacherIds = Array.from(new Set(exams.map((e) => String(e.teacher_id))));
       const [{ data: teachers }, { data: qs }, { data: atts }] = await Promise.all([
-        sb.from('users').select('id, name, email').in('id', tIds),
-        sb.from('questions').select('exam_id').in('exam_id', eIds),
-        sb.from('exam_attempts').select('exam_id, status').in('exam_id', eIds),
+        sb.from('users').select('id, name, email').in('id', teacherIds),
+        sb.from('questions').select('exam_id').in('exam_id', examIds),
+        sb.from('exam_attempts').select('exam_id, status').in('exam_id', examIds).in('status', ['submitted', 'evaluated']),
       ]);
-      const tMap = new Map((teachers || []).map((t) => [String(t.id), t]));
-      const qCounts = new Map<string, number>();
-      for (const q of qs || []) qCounts.set(String(q.exam_id), (qCounts.get(String(q.exam_id)) || 0) + 1);
-      const subCounts = new Map<string, number>();
-      const pendCounts = new Map<string, number>();
+      const tMap = new Map((teachers || []).map((t) => [String(t.id), { name: String(t.name), email: String(t.email) }]));
+      const qCount = new Map<string, number>();
+      for (const q of qs || []) qCount.set(String(q.exam_id), (qCount.get(String(q.exam_id)) || 0) + 1);
+      const subCount = new Map<string, number>();
+      const pendCount = new Map<string, number>();
       for (const a of atts || []) {
         const eid = String(a.exam_id);
-        if (a.status === 'submitted' || a.status === 'evaluated') subCounts.set(eid, (subCounts.get(eid) || 0) + 1);
-        if (a.status === 'submitted') pendCounts.set(eid, (pendCounts.get(eid) || 0) + 1);
+        subCount.set(eid, (subCount.get(eid) || 0) + 1);
+        if (a.status === 'submitted') pendCount.set(eid, (pendCount.get(eid) || 0) + 1);
       }
       return exams.map((e) => {
         const t = tMap.get(String(e.teacher_id));
         return {
           id: String(e.id),
           teacherId: String(e.teacher_id),
-          teacherName: t ? String(t.name) : 'Instructor',
-          teacherEmail: t ? String(t.email) : '',
+          teacherName: t?.name || 'Teacher',
+          teacherEmail: t?.email || '',
           title: String(e.title),
           subject: String(e.subject),
-          instructions: String(e.instructions),
+          instructions: String(e.instructions || ''),
           durationMinutes: Number(e.duration_minutes),
           totalMarks: Number(e.total_marks),
           passingMarks: Number(e.passing_marks),
           deadlineAt: e.deadline_at ? String(e.deadline_at) : null,
-          status: e.status as 'draft' | 'published',
+          status: (e.status as 'draft' | 'published') || 'draft',
           randomizeQuestions: Boolean(e.randomize_questions),
           randomizeOptions: Boolean(e.randomize_options),
           trackTabSwitches: Boolean(e.track_tab_switches),
           warnOnTabLeave: Boolean(e.warn_on_tab_leave),
           requireFullscreen: Boolean(e.require_fullscreen),
           blockCopyPaste: Boolean(e.block_copy_paste),
-          maxTabSwitches: Number(e.max_tab_switches || 3),
+          maxTabSwitches: Number(e.max_tab_switches ?? 3),
           assignAll: Boolean(e.assign_all),
-          questionCount: qCounts.get(String(e.id)) || 0,
-          submissionCount: subCounts.get(String(e.id)) || 0,
-          pendingEvaluationCount: pendCounts.get(String(e.id)) || 0,
+          questionCount: qCount.get(String(e.id)) || 0,
+          submissionCount: subCount.get(String(e.id)) || 0,
+          pendingEvaluationCount: pendCount.get(String(e.id)) || 0,
           createdAt: String(e.created_at),
         };
       });
@@ -1739,7 +1888,7 @@ export class DomainStore {
           (SELECT COUNT(*) FROM exam_attempts ea WHERE ea.exam_id = e.id AND ea.status IN ('submitted', 'evaluated')) as submission_count,
           (SELECT COUNT(*) FROM exam_attempts ea WHERE ea.exam_id = e.id AND ea.status = 'submitted') as pending_count
          FROM exams e
-         JOIN users u ON u.id = e.teacher_id
+         LEFT JOIN users u ON u.id = e.teacher_id
          ORDER BY e.created_at DESC`
       )
       .all();
@@ -1747,23 +1896,23 @@ export class DomainStore {
     return rows.map((e) => ({
       id: String(e.id),
       teacherId: String(e.teacher_id),
-      teacherName: String(e.teacher_name || 'Instructor'),
+      teacherName: String(e.teacher_name || 'Teacher'),
       teacherEmail: String(e.teacher_email || ''),
       title: String(e.title),
       subject: String(e.subject),
-      instructions: String(e.instructions),
+      instructions: String(e.instructions || ''),
       durationMinutes: Number(e.duration_minutes),
       totalMarks: Number(e.total_marks),
       passingMarks: Number(e.passing_marks),
       deadlineAt: e.deadline_at ? String(e.deadline_at) : null,
-      status: e.status as 'draft' | 'published',
+      status: (e.status as 'draft' | 'published') || 'draft',
       randomizeQuestions: Boolean(e.randomize_questions),
       randomizeOptions: Boolean(e.randomize_options),
       trackTabSwitches: Boolean(e.track_tab_switches),
       warnOnTabLeave: Boolean(e.warn_on_tab_leave),
       requireFullscreen: Boolean(e.require_fullscreen),
       blockCopyPaste: Boolean(e.block_copy_paste),
-      maxTabSwitches: Number(e.max_tab_switches || 3),
+      maxTabSwitches: Number(e.max_tab_switches ?? 3),
       assignAll: Boolean(e.assign_all),
       questionCount: Number(e.question_count || 0),
       submissionCount: Number(e.submission_count || 0),
@@ -1788,11 +1937,11 @@ export class DomainStore {
         sb.from('exams').select('id, title, subject').in('id', examIds),
         sb.from('users').select('id, name, email').in('id', studentIds),
       ]);
-      const exMap = new Map((exams || []).map((e) => [String(e.id), e]));
-      const stMap = new Map((students || []).map((s) => [String(s.id), s]));
+      const eMap = new Map((exams || []).map((e) => [String(e.id), e]));
+      const sMap = new Map((students || []).map((s) => [String(s.id), s]));
       return attempts.map((a) => {
-        const ex = exMap.get(String(a.exam_id));
-        const st = stMap.get(String(a.student_id));
+        const ex = eMap.get(String(a.exam_id));
+        const st = sMap.get(String(a.student_id));
         return {
           id: String(a.id),
           examId: String(a.exam_id),
@@ -1805,7 +1954,6 @@ export class DomainStore {
           startedAt: String(a.started_at),
           submittedAt: a.submitted_at ? String(a.submitted_at) : null,
           tabSwitchCount: Number(a.tab_switch_count || 0),
-          focusLossCount: Number(a.focus_loss_count || 0),
         };
       });
     }
@@ -1815,8 +1963,8 @@ export class DomainStore {
       .prepare(
         `SELECT ea.*, e.title as exam_title, e.subject, u.name as student_name, u.email as student_email
          FROM exam_attempts ea
-         JOIN exams e ON e.id = ea.exam_id
-         JOIN users u ON u.id = ea.student_id
+         LEFT JOIN exams e ON e.id = ea.exam_id
+         LEFT JOIN users u ON u.id = ea.student_id
          ORDER BY ea.started_at DESC
          LIMIT 200`
       )
@@ -1825,16 +1973,15 @@ export class DomainStore {
     return rows.map((a) => ({
       id: String(a.id),
       examId: String(a.exam_id),
-      examTitle: String(a.exam_title),
-      subject: String(a.subject),
+      examTitle: String(a.exam_title || 'Exam'),
+      subject: String(a.subject || ''),
       studentId: String(a.student_id),
-      studentName: String(a.student_name),
-      studentEmail: String(a.student_email),
+      studentName: String(a.student_name || 'Student'),
+      studentEmail: String(a.student_email || ''),
       status: String(a.status),
       startedAt: String(a.started_at),
       submittedAt: a.submitted_at ? String(a.submitted_at) : null,
       tabSwitchCount: Number(a.tab_switch_count || 0),
-      focusLossCount: Number(a.focus_loss_count || 0),
     }));
   }
 
@@ -1854,25 +2001,22 @@ export class DomainStore {
         sb.from('exams').select('id, title, subject').in('id', examIds),
         sb.from('users').select('id, name, email').in('id', studentIds),
       ]);
-      const exMap = new Map((exams || []).map((e) => [String(e.id), e]));
-      const stMap = new Map((students || []).map((s) => [String(s.id), s]));
+      const eMap = new Map((exams || []).map((e) => [String(e.id), e]));
+      const sMap = new Map((students || []).map((s) => [String(s.id), s]));
       return results.map((r) => {
-        const ex = exMap.get(String(r.exam_id));
-        const st = stMap.get(String(r.student_id));
+        const ex = eMap.get(String(r.exam_id));
+        const st = sMap.get(String(r.student_id));
         return {
           id: String(r.id),
           attemptId: String(r.attempt_id),
           examId: String(r.exam_id),
           examTitle: ex ? String(ex.title) : 'Exam',
           subject: ex ? String(ex.subject) : '',
-          studentId: String(r.student_id),
           studentName: st ? String(st.name) : 'Student',
           studentEmail: st ? String(st.email) : '',
-          objectiveScore: Number(r.objective_score),
-          descriptiveScore: Number(r.descriptive_score),
-          totalScore: Number(r.total_score),
-          totalMarks: Number(r.total_marks),
-          percentage: Number(r.percentage),
+          totalScore: Number(r.total_score || 0),
+          totalMarks: Number(r.total_marks || 0),
+          percentage: Number(r.percentage || 0),
           passed: Boolean(r.passed),
           status: String(r.status),
           publishedAt: String(r.published_at),
@@ -1885,8 +2029,8 @@ export class DomainStore {
       .prepare(
         `SELECT r.*, e.title as exam_title, e.subject, u.name as student_name, u.email as student_email
          FROM results r
-         JOIN exams e ON e.id = r.exam_id
-         JOIN users u ON u.id = r.student_id
+         LEFT JOIN exams e ON e.id = r.exam_id
+         LEFT JOIN users u ON u.id = r.student_id
          ORDER BY r.published_at DESC
          LIMIT 200`
       )
@@ -1896,122 +2040,17 @@ export class DomainStore {
       id: String(r.id),
       attemptId: String(r.attempt_id),
       examId: String(r.exam_id),
-      examTitle: String(r.exam_title),
-      subject: String(r.subject),
-      studentId: String(r.student_id),
-      studentName: String(r.student_name),
-      studentEmail: String(r.student_email),
-      objectiveScore: Number(r.objective_score),
-      descriptiveScore: Number(r.descriptive_score),
-      totalScore: Number(r.total_score),
-      totalMarks: Number(r.total_marks),
-      percentage: Number(r.percentage),
+      examTitle: String(r.exam_title || 'Exam'),
+      subject: String(r.subject || ''),
+      studentName: String(r.student_name || 'Student'),
+      studentEmail: String(r.student_email || ''),
+      totalScore: Number(r.total_score || 0),
+      totalMarks: Number(r.total_marks || 0),
+      percentage: Number(r.percentage || 0),
       passed: Boolean(r.passed),
       status: String(r.status),
       publishedAt: String(r.published_at),
     }));
-  }
-
-  async getDatabaseOverview(): Promise<{
-    provider: 'sqlite' | 'supabase';
-    tables: Array<{ name: string; rows: number }>;
-  }> {
-    const tableNames = [
-      'users',
-      'profiles',
-      'teacher_profiles',
-      'classes',
-      'class_members',
-      'documents',
-      'practice_quizzes',
-      'practice_attempts',
-      'question_bank',
-      'exams',
-      'questions',
-      'exam_assignments',
-      'exam_attempts',
-      'student_answers',
-      'results',
-      'evaluations',
-      'activity_logs',
-      'request_logs',
-      'admin_audit_logs',
-      'platform_settings',
-    ];
-
-    if (store.provider === 'supabase') {
-      const sb = store.getSupa();
-      const counts = await Promise.all(
-        tableNames.map(async (name) => {
-          const { count } = await sb.from(name).select('id', { count: 'exact', head: true });
-          return { name, rows: count || 0 };
-        })
-      );
-      return { provider: 'supabase', tables: counts };
-    }
-
-    const db = store.getSql();
-    const tables = tableNames.map((name) => {
-      try {
-        const row = db.prepare(`SELECT COUNT(*) as c FROM ${name}`).get() as { c: number };
-        return { name, rows: Number(row.c) };
-      } catch {
-        return { name, rows: 0 };
-      }
-    });
-    return { provider: 'sqlite', tables };
-  }
-
-  async getAdminOverview() {
-    const [users, classes, exams, attempts, results, usage, auditLogs, settings, dbOverview] =
-      await Promise.all([
-        this.adminListUsers(),
-        this.adminListClasses(),
-        this.adminListExams(),
-        this.adminListAttempts(),
-        this.adminListResults(),
-        store.getUsageOverview(),
-        this.listAdminAuditLogs(60),
-        this.getPlatformSettings(),
-        this.getDatabaseOverview(),
-      ]);
-
-    const evaluatedResults = results.filter((r) => r.status === 'evaluated');
-    const avgPlatformScore =
-      evaluatedResults.length > 0
-        ? Math.round(
-            (evaluatedResults.reduce((acc, r) => acc + r.percentage, 0) / evaluatedResults.length) * 10
-          ) / 10
-        : null;
-    const passCount = evaluatedResults.filter((r) => r.passed).length;
-    const platformPassRate =
-      evaluatedResults.length > 0 ? Math.round((passCount / evaluatedResults.length) * 1000) / 10 : null;
-
-    return {
-      dbProvider: store.provider,
-      summary: {
-        totalUsers: users.length,
-        totalStudents: users.filter((u) => u.role === 'student').length,
-        totalTeachers: users.filter((u) => u.role === 'teacher').length,
-        pendingTeachers: users.filter(
-          (u) => u.role === 'teacher' && u.teacherProfile?.approvalStatus === 'pending'
-        ).length,
-        totalAdmins: users.filter((u) => u.role === 'admin').length,
-        totalClasses: classes.length,
-        totalExams: exams.length,
-        totalAttempts: attempts.length,
-        totalResults: results.length,
-        totalDocuments: usage.summary.totalDocuments,
-        totalAiGenerations: usage.summary.totalAiGenerations,
-        totalRequests: usage.summary.totalRequests,
-        avgPlatformScore,
-        platformPassRate,
-      },
-      settings,
-      database: dbOverview,
-      recentAuditLogs: auditLogs.slice(0, 20),
-      recentRequests: usage.logs.slice(0, 50) as RequestLogRecord[],
-    };
   }
 }
 

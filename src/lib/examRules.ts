@@ -2,12 +2,18 @@ import type {
   AssignmentLifecycleStatus,
   Difficulty,
   ExamResultDetail,
+  PracticeQuizRecord,
   QuestionType,
   QuizQuestion,
   StudentProgressSummary,
 } from '../types/index';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+
+export function normalizeTwoRole(raw: unknown): 'student' | 'teacher' {
+  const cleaned = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return cleaned === 'teacher' ? 'teacher' : 'student';
+}
 
 const ALLOWED_PDF_MIMES = new Set(['application/pdf', 'application/x-pdf']);
 const ALLOWED_DOCX_MIMES = new Set([
@@ -410,6 +416,25 @@ export function parseAndValidateGroqQuestions(
   }
 
   return validated;
+}
+
+export function sanitizePracticeQuestionForStudent(q: QuizQuestion): QuizQuestion {
+  return {
+    id: q.id,
+    questionType: q.questionType,
+    difficulty: q.difficulty,
+    ...(q.topic ? { topic: q.topic } : {}),
+    prompt: q.prompt,
+    options: Array.isArray(q.options) ? [...q.options] : [],
+    marks: q.marks,
+  };
+}
+
+export function sanitizePracticeQuizForStudent(quiz: PracticeQuizRecord): PracticeQuizRecord {
+  return {
+    ...quiz,
+    questions: quiz.questions.map(sanitizePracticeQuestionForStudent),
+  };
 }
 
 export interface GradeableQuestion {

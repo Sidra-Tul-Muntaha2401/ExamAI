@@ -14,6 +14,8 @@ import {
   isAttemptWithinSubmissionWindow,
   normalizeEnrollmentCode,
   parseAndValidateGroqQuestions,
+  sanitizePracticeQuestionForStudent,
+  sanitizePracticeQuizForStudent,
   seededShuffle,
   shouldAutoSubmitForViolations,
   validateExtractedText,
@@ -360,3 +362,53 @@ test('computeTeacherClassAnalytics calculates real class averages, distribution,
   assert.equal(analytics.ranking[0].studentName, 'Maya');
   assert.equal(analytics.studentsNeedingSupport.length, 2); // Marcus (48%) + Zoe (0 attempts)
 });
+
+test('sanitizePracticeQuizForStudent strips answer keys, explanations, and rubrics while keeping prompts and options', () => {
+  const sanitizedQuestion = sanitizePracticeQuestionForStudent({
+    id: 'q1',
+    questionType: 'mcq',
+    difficulty: 'Medium',
+    topic: 'SQL',
+    prompt: 'Which key uniquely identifies a row?',
+    options: ['Primary Key', 'Foreign Key', 'Index', 'Trigger'],
+    correctAnswer: 'Primary Key',
+    explanation: 'A primary key uniquely identifies each record in a table.',
+    marks: 2,
+  });
+
+  assert.equal('correctAnswer' in sanitizedQuestion, false);
+  assert.equal('explanation' in sanitizedQuestion, false);
+  assert.equal('suggestedAnswer' in sanitizedQuestion, false);
+  assert.equal('markingGuidance' in sanitizedQuestion, false);
+  assert.deepEqual(sanitizedQuestion.options, ['Primary Key', 'Foreign Key', 'Index', 'Trigger']);
+
+  const sanitizedQuiz = sanitizePracticeQuizForStudent({
+    id: 'pq_1',
+    studentId: 'stu_1',
+    documentId: 'doc_1',
+    title: 'Database Quiz',
+    topic: 'SQL',
+    difficulty: 'Medium',
+    questionType: 'mixed',
+    createdAt: '2026-11-24T12:00:00.000Z',
+    questions: [
+      sanitizedQuestion,
+      {
+        id: 'q2',
+        questionType: 'short_answer',
+        difficulty: 'Hard',
+        prompt: 'Explain BCNF.',
+        options: [],
+        suggestedAnswer: 'Every determinant must be a candidate key.',
+        markingGuidance: 'Award 5 marks for candidate key condition.',
+        marks: 5,
+      },
+    ],
+  });
+
+  assert.equal(sanitizedQuiz.questions.length, 2);
+  assert.equal('suggestedAnswer' in sanitizedQuiz.questions[1], false);
+  assert.equal('markingGuidance' in sanitizedQuiz.questions[1], false);
+  assert.equal(sanitizedQuiz.questions[1].prompt, 'Explain BCNF.');
+});
+

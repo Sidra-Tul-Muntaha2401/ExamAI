@@ -50,8 +50,43 @@ interface SqliteDatabase {
   prepare: (sql: string) => SqliteStatement;
 }
 
+function stripWrappingQuotes(value: string | undefined): string {
+  if (!value) return '';
+  let trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    trimmed = trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function sanitizeEnvValue(name: string, value: string | undefined): string {
+  let cleaned = stripWrappingQuotes(value);
+  const prefix = `${name}=`;
+  while (cleaned.startsWith(prefix)) {
+    cleaned = stripWrappingQuotes(cleaned.slice(prefix.length));
+  }
+  return cleaned;
+}
+
+function detectSupabaseJwtRole(token: string): string | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as {
+      role?: unknown;
+    };
+    return typeof payload.role === 'string' ? payload.role : null;
+  } catch {
+    return null;
+  }
+}
+
 function resolveWritableDbPath(): string {
-  const configured = path.resolve(process.cwd(), process.env.DATABASE_PATH || './data/exampilot.sqlite');
+  const envDbPath = sanitizeEnvValue('DATABASE_PATH', process.env.DATABASE_PATH);
+  const configured = path.resolve(process.cwd(), envDbPath || './data/exampilot.sqlite');
   try {
     fs.mkdirSync(path.dirname(configured), { recursive: true });
     fs.accessSync(path.dirname(configured), fs.constants.W_OK);
@@ -376,18 +411,6 @@ Foreign keys enforce referential integrity between child and parent tables, ensu
   };
 }
 
-function stripWrappingQuotes(value: string | undefined): string {
-  if (!value) return '';
-  let trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    trimmed = trimmed.slice(1, -1).trim();
-  }
-  return trimmed;
-}
-
 function isPlaceholderValue(value: string): boolean {
   if (!value) return true;
   const lower = value.toLowerCase();
@@ -426,6 +449,12 @@ export function normalizeSupabaseUrl(raw: string | undefined): { url: string | n
     };
   }
 
+  // Handle bare db.<project-ref>.supabase.co host pasted without scheme
+  const bareDbMatch = cleaned.match(/^db\.([a-z0-9-]+)\.supabase\.(co|in)$/i);
+  if (bareDbMatch) {
+    return { url: `https://${bareDbMatch[1]}.supabase.${bareDbMatch[2]}` };
+  }
+
   const withProtocol =
     !/^https?:\/\//i.test(cleaned) && /^[a-z0-9-]+\.supabase\.(co|in)$/i.test(cleaned)
       ? `https://${cleaned}`
@@ -441,11 +470,43 @@ export function normalizeSupabaseUrl(raw: string | undefined): { url: string | n
     }
     return { url: parsed.origin };
   } catch {
+    const schemeHint = cleaned.includes('://') ? cleaned.split('://')[0] : 'no-scheme';
     return {
       url: null,
-      reason: 'Configured SUPABASE_URL is not a valid HTTP/HTTPS URL (expected https://<project-ref>.supabase.co).',
+      reason: `Configured SUPABASE_URL is not a valid HTTP/HTTPS URL (len=${cleaned.length}, scheme=${schemeHint}; expected https://<project-ref>.supabase.co).`,
     };
   }
+}
+
+function firstValidSupabaseUrl(
+  candidates: Array<{ name: string; value: string | undefined }>
+): { url: string | null; sourceName?: string; invalidReasons: string[] } {
+  const invalidReasons: string[] = [];
+  for (const item of candidates) {
+    const cleaned = sanitizeEnvValue(item.name, item.value);
+    if (!cleaned || isPlaceholderValue(cleaned)) continue;
+    const norm = normalizeSupabaseUrl(cleaned);
+    if (norm.url) {
+      return { url: norm.url, sourceName: item.name, invalidReasons };
+    }
+    if (norm.reason) {
+      invalidReasons.push(`${item.name}: ${norm.reason}`);
+    }
+  }
+  return { url: null, invalidReasons };
+}
+
+function firstNonPlaceholderKey(candidates: Array<{ name: string; value: string | undefined }>): {
+  key: string | null;
+  sourceName?: string;
+} {
+  for (const item of candidates) {
+    const cleaned = sanitizeEnvValue(item.name, item.value);
+    if (cleaned && !isPlaceholderValue(cleaned)) {
+      return { key: cleaned, sourceName: item.name };
+    }
+  }
+  return { key: null };
 }
 
 class ExamDataStore {
@@ -459,15 +520,24 @@ class ExamDataStore {
   private initPromise: Promise<void> | null = null;
 
   public getSupabasePublicConfig(): { url: string | null; anonKey: string | null } {
-    const rawUrl = stripWrappingQuotes(process.env.SUPABASE_URL) || stripWrappingQuotes(process.env.VITE_SUPABASE_URL);
-    const anonKey =
-      stripWrappingQuotes(process.env.SUPABASE_ANON_KEY) ||
-      stripWrappingQuotes(process.env.VITE_SUPABASE_ANON_KEY);
-    const normalized = normalizeSupabaseUrl(rawUrl);
-    if (!normalized.url || !anonKey || isPlaceholderValue(anonKey)) {
+    const urlRes = firstValidSupabaseUrl([
+      { name: 'VITE_SUPABASE_URL', value: process.env.VITE_SUPABASE_URL },
+      { name: 'SUPABASE_URL', value: process.env.SUPABASE_URL },
+      { name: 'NEXT_PUBLIC_SUPABASE_URL', value: process.env.NEXT_PUBLIC_SUPABASE_URL },
+    ]);
+    const keyRes = firstNonPlaceholderKey([
+      { name: 'VITE_SUPABASE_ANON_KEY', value: process.env.VITE_SUPABASE_ANON_KEY },
+      { name: 'VITE_SUPABASE_PUBLISHABLE_KEY', value: process.env.VITE_SUPABASE_PUBLISHABLE_KEY },
+      { name: 'VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY', value: process.env.VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY },
+      { name: 'SUPABASE_ANON_KEY', value: process.env.SUPABASE_ANON_KEY },
+      { name: 'SUPABASE_PUBLISHABLE_KEY', value: process.env.SUPABASE_PUBLISHABLE_KEY },
+      { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', value: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY },
+      { name: 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY', value: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY },
+    ]);
+    if (!urlRes.url || !keyRes.key) {
       return { url: null, anonKey: null };
     }
-    return { url: normalized.url, anonKey };
+    return { url: urlRes.url, anonKey: keyRes.key };
   }
 
   public getSql(): SqliteDatabase {
@@ -492,67 +562,83 @@ class ExamDataStore {
   }
 
   private async _doInitialize(): Promise<void> {
-    const rawUrl = stripWrappingQuotes(process.env.SUPABASE_URL);
-    const rawKey =
-      stripWrappingQuotes(process.env.SUPABASE_SERVICE_ROLE_KEY) ||
-      stripWrappingQuotes(process.env.SUPABASE_SECRET_KEY) ||
-      stripWrappingQuotes(process.env.SUPABASE_ANON_KEY);
+    const urlRes = firstValidSupabaseUrl([
+      { name: 'SUPABASE_URL', value: process.env.SUPABASE_URL },
+      { name: 'VITE_SUPABASE_URL', value: process.env.VITE_SUPABASE_URL },
+      { name: 'NEXT_PUBLIC_SUPABASE_URL', value: process.env.NEXT_PUBLIC_SUPABASE_URL },
+    ]);
+    const keyRes = firstNonPlaceholderKey([
+      { name: 'SUPABASE_SERVICE_ROLE_KEY', value: process.env.SUPABASE_SERVICE_ROLE_KEY },
+      { name: 'SUPABASE_SECRET_KEY', value: process.env.SUPABASE_SECRET_KEY },
+      { name: 'SUPABASE_ANON_KEY', value: process.env.SUPABASE_ANON_KEY },
+      { name: 'SUPABASE_PUBLISHABLE_KEY', value: process.env.SUPABASE_PUBLISHABLE_KEY },
+      { name: 'VITE_SUPABASE_ANON_KEY', value: process.env.VITE_SUPABASE_ANON_KEY },
+      { name: 'VITE_SUPABASE_PUBLISHABLE_KEY', value: process.env.VITE_SUPABASE_PUBLISHABLE_KEY },
+      { name: 'VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY', value: process.env.VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY },
+    ]);
 
-    const hasRawUrl = Boolean(rawUrl && !isPlaceholderValue(rawUrl));
-    const hasRawKey = Boolean(rawKey && !isPlaceholderValue(rawKey));
+    if (urlRes.url && keyRes.key) {
+      const jwtRole = detectSupabaseJwtRole(keyRes.key);
+      const isServiceKeyName =
+        keyRes.sourceName === 'SUPABASE_SERVICE_ROLE_KEY' ||
+        keyRes.sourceName === 'SUPABASE_SECRET_KEY';
+      const hasServiceRoleKey =
+        jwtRole === 'service_role' || (isServiceKeyName && jwtRole === null && !keyRes.key.startsWith('sb_publishable_'));
+      try {
+        const client = createClient(urlRes.url, keyRes.key, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
 
-    if (hasRawUrl && hasRawKey) {
-      const normalized = normalizeSupabaseUrl(rawUrl);
-      if (normalized.url) {
-        try {
-          const client = createClient(normalized.url, rawKey, {
-            auth: { persistSession: false, autoRefreshToken: false },
-          });
-
-          const { error } = await client.from('users').select('id').limit(1);
-          if (error) {
-            const msg = `Supabase schema check failed (${error.message}). Run supabase/schema.sql in your Supabase SQL Editor.`;
-            if (process.env.VERCEL === '1') {
-              this.provider = 'supabase';
-              this.supabase = client;
-              this.initError = msg;
-              console.error(msg);
-              this.ready = false;
-              this.initPromise = null;
-              return;
-            }
-            console.warn(`${msg} Falling back to local SQLite.`);
-            this.fallbackNotice = msg;
-          } else {
-            this.provider = 'supabase';
-            this.supabase = client;
-            await this.seedSupabaseIfEmpty();
-            await this.ensureOptionalEnvAdminSupabase();
-            this.initError = null;
-            this.fallbackNotice = null;
-            this.ready = true;
-            return;
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Supabase initialization failed.';
+        const { error } = await client.from('users').select('id').limit(1);
+        if (error) {
+          const msg = `Supabase schema check failed (${error.message}). Run supabase/schema.sql in your Supabase SQL Editor.`;
           if (process.env.VERCEL === '1') {
             this.provider = 'supabase';
-            this.initError = `Supabase connection failed: ${msg}`;
-            console.error(this.initError);
+            this.supabase = client;
+            this.initError = msg;
+            console.error(msg);
             this.ready = false;
             this.initPromise = null;
             return;
           }
-          console.warn(`Supabase connection failed (${msg}). Falling back to local SQLite.`);
-          this.fallbackNotice = `Supabase connection failed (${msg}); using local SQLite.`;
+          const isAuthOnlySetup =
+            !hasServiceRoleKey ||
+            /public\.users|schema cache|does not exist/i.test(error.message);
+          if (isAuthOnlySetup) {
+            console.log('Supabase Auth configured; using local SQLite for application data.');
+            this.fallbackNotice = null;
+          } else {
+            console.warn(`${msg} Falling back to local SQLite.`);
+            this.fallbackNotice = msg;
+          }
+        } else {
+          this.provider = 'supabase';
+          this.supabase = client;
+          await this.seedSupabaseIfEmpty();
+          await this.ensureSeededDemoResultsSupabase();
+          await this.ensureOptionalEnvAdminSupabase();
+          this.initError = null;
+          this.fallbackNotice = null;
+          this.ready = true;
+          return;
         }
-      } else {
-        const msg =
-          normalized.reason ||
-          'Configured SUPABASE_URL is invalid; falling back to local SQLite.';
-        console.warn(msg);
-        this.fallbackNotice = msg;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Supabase initialization failed.';
+        if (process.env.VERCEL === '1') {
+          this.provider = 'supabase';
+          this.initError = `Supabase connection failed: ${msg}`;
+          console.error(this.initError);
+          this.ready = false;
+          this.initPromise = null;
+          return;
+        }
+        console.warn(`Supabase connection failed (${msg}). Falling back to local SQLite.`);
+        this.fallbackNotice = `Supabase connection failed (${msg}); using local SQLite.`;
       }
+    } else if (urlRes.invalidReasons.length > 0 && keyRes.key) {
+      const msg = urlRes.invalidReasons.join(' | ');
+      console.warn(msg);
+      this.fallbackNotice = msg;
     }
 
     // Fallback to local SQLite (loaded dynamically so serverless bundlers do not statically fail on node:sqlite)
@@ -563,10 +649,20 @@ class ExamDataStore {
       const { DatabaseSync } = (await import(sqliteSpec)) as {
         DatabaseSync: new (filename: string) => SqliteDatabase;
       };
-      const dbPath = resolveWritableDbPath();
-      this.sqliteDb = new DatabaseSync(dbPath);
-      this.sqliteDb.exec('PRAGMA foreign_keys = ON;');
-      this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
+      const primaryDbPath = resolveWritableDbPath();
+      try {
+        this.sqliteDb = new DatabaseSync(primaryDbPath);
+        this.sqliteDb.exec('PRAGMA busy_timeout = 5000;');
+        this.sqliteDb.exec('PRAGMA foreign_keys = ON;');
+        this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
+      } catch {
+        const tmpDbDir = path.join(os.tmpdir(), 'examai-data');
+        fs.mkdirSync(tmpDbDir, { recursive: true });
+        this.sqliteDb = new DatabaseSync(path.join(tmpDbDir, 'exampilot-fallback.sqlite'));
+        this.sqliteDb.exec('PRAGMA busy_timeout = 5000;');
+        this.sqliteDb.exec('PRAGMA foreign_keys = ON;');
+        this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
+      }
 
       this.createSqliteTables();
       this.seedSqliteIfEmpty();
@@ -1403,18 +1499,106 @@ class ExamDataStore {
       evaluated_at: s.earlierSubmit,
     });
 
-    await sb.from('results').insert([
+    const { error: resErr } = await sb.from('results').insert([
       { id: 'res_maya_q1', attempt_id: 'att_maya_q1', exam_id: 'exam_norm_quiz1', student_id: s.studentId, objective_score: 4, descriptive_score: 4.5, total_score: 8.5, total_marks: 9, percentage: 94.4, passed: 1, status: 'evaluated', published_at: s.earlierSubmit },
       { id: 'res_marcus_q1', attempt_id: 'att_marcus_q1', exam_id: 'exam_norm_quiz1', student_id: s.student2Id, objective_score: 2, descriptive_score: 0, total_score: 2, total_marks: 9, percentage: 22.2, passed: 0, status: 'pending_evaluation', published_at: s.earlierSubmit },
     ]);
+    if (resErr) {
+      console.warn('Supabase seed results insert warning:', resErr.message);
+    }
 
-    await sb.from('activity_logs').insert([
+    const { error: actErr } = await sb.from('activity_logs').insert([
       { id: 'log_1', attempt_id: 'att_maya_q1', exam_id: 'exam_norm_quiz1', student_id: s.studentId, event_type: 'exam_started', details: 'Exam session initialized', created_at: s.earlierStart },
       { id: 'log_2', attempt_id: 'att_maya_q1', exam_id: 'exam_norm_quiz1', student_id: s.studentId, event_type: 'exam_submitted', details: 'Submitted within time window', created_at: s.earlierSubmit },
       { id: 'log_3', attempt_id: 'att_marcus_q1', exam_id: 'exam_norm_quiz1', student_id: s.student2Id, event_type: 'exam_started', details: 'Exam session initialized', created_at: s.earlierStart },
       { id: 'log_4', attempt_id: 'att_marcus_q1', exam_id: 'exam_norm_quiz1', student_id: s.student2Id, event_type: 'tab_hidden', details: 'Browser tab became hidden during attempt', created_at: s.earlierStart },
       { id: 'log_5', attempt_id: 'att_marcus_q1', exam_id: 'exam_norm_quiz1', student_id: s.student2Id, event_type: 'exam_submitted', details: 'Submitted within time window', created_at: s.earlierSubmit },
     ]);
+    if (actErr) {
+      console.warn('Supabase seed activity_logs insert warning:', actErr.message);
+    }
+  }
+
+  private async ensureSeededDemoResultsSupabase(): Promise<void> {
+    try {
+      const sb = this.getSupa();
+      const [{ count: resCount }, { data: seededAttempts }, { count: logCount }] = await Promise.all([
+        sb.from('results').select('id', { count: 'exact', head: true }),
+        sb.from('exam_attempts').select('id').in('id', ['att_maya_q1', 'att_marcus_q1']),
+        sb.from('activity_logs').select('id', { count: 'exact', head: true }),
+      ]);
+
+      const attemptIds = new Set((seededAttempts || []).map((a) => String(a.id)));
+      if (attemptIds.size === 0) return;
+
+      const s = buildSeedPayload();
+      if ((resCount || 0) === 0) {
+        const rowsToUpsert: Array<Record<string, unknown>> = [];
+        if (attemptIds.has('att_maya_q1')) {
+          rowsToUpsert.push({
+            id: 'res_maya_q1',
+            attempt_id: 'att_maya_q1',
+            exam_id: 'exam_norm_quiz1',
+            student_id: s.studentId,
+            objective_score: 4,
+            descriptive_score: 4.5,
+            total_score: 8.5,
+            total_marks: 9,
+            percentage: 94.4,
+            passed: 1,
+            status: 'evaluated',
+            published_at: s.earlierSubmit,
+          });
+        }
+        if (attemptIds.has('att_marcus_q1')) {
+          rowsToUpsert.push({
+            id: 'res_marcus_q1',
+            attempt_id: 'att_marcus_q1',
+            exam_id: 'exam_norm_quiz1',
+            student_id: s.student2Id,
+            objective_score: 2,
+            descriptive_score: 0,
+            total_score: 2,
+            total_marks: 9,
+            percentage: 22.2,
+            passed: 0,
+            status: 'pending_evaluation',
+            published_at: s.earlierSubmit,
+          });
+        }
+        if (rowsToUpsert.length > 0) {
+          const { error } = await sb.from('results').upsert(rowsToUpsert, { onConflict: 'attempt_id' });
+          if (error) {
+            console.warn('Supabase demo results backfill warning:', error.message);
+          }
+        }
+      }
+
+      if ((logCount || 0) === 0) {
+        const logsToUpsert: Array<Record<string, unknown>> = [];
+        if (attemptIds.has('att_maya_q1')) {
+          logsToUpsert.push(
+            { id: 'log_1', attempt_id: 'att_maya_q1', exam_id: 'exam_norm_quiz1', student_id: s.studentId, event_type: 'exam_started', details: 'Exam session initialized', created_at: s.earlierStart },
+            { id: 'log_2', attempt_id: 'att_maya_q1', exam_id: 'exam_norm_quiz1', student_id: s.studentId, event_type: 'exam_submitted', details: 'Submitted within time window', created_at: s.earlierSubmit }
+          );
+        }
+        if (attemptIds.has('att_marcus_q1')) {
+          logsToUpsert.push(
+            { id: 'log_3', attempt_id: 'att_marcus_q1', exam_id: 'exam_norm_quiz1', student_id: s.student2Id, event_type: 'exam_started', details: 'Exam session initialized', created_at: s.earlierStart },
+            { id: 'log_4', attempt_id: 'att_marcus_q1', exam_id: 'exam_norm_quiz1', student_id: s.student2Id, event_type: 'tab_hidden', details: 'Browser tab became hidden during attempt', created_at: s.earlierStart },
+            { id: 'log_5', attempt_id: 'att_marcus_q1', exam_id: 'exam_norm_quiz1', student_id: s.student2Id, event_type: 'exam_submitted', details: 'Submitted within time window', created_at: s.earlierSubmit }
+          );
+        }
+        if (logsToUpsert.length > 0) {
+          const { error } = await sb.from('activity_logs').upsert(logsToUpsert, { onConflict: 'id' });
+          if (error) {
+            console.warn('Supabase demo activity_logs backfill warning:', error.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Supabase demo backfill check warning:', err instanceof Error ? err.message : err);
+    }
   }
 
   private ensureSqliteDefaultsAndEnvAdmin(): void {
@@ -1466,19 +1650,33 @@ class ExamDataStore {
     // Optional env-configured initial admin bootstrap (ADMIN_EMAIL + ADMIN_PASSWORD)
     const adminEmail = stripWrappingQuotes(process.env.ADMIN_EMAIL).trim().toLowerCase();
     const adminPassword = stripWrappingQuotes(process.env.ADMIN_PASSWORD);
-    if (adminEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) && adminPassword.length >= 8) {
-      const existing = db.prepare('SELECT id, role FROM users WHERE email = ?').get(adminEmail) as { id: string; role: string } | undefined;
-      if (!existing) {
-        const adminId = `usr_admin_${crypto.randomUUID().slice(0, 8)}`;
-        const passwordHash = hashPassword(adminPassword);
-        db.prepare(
-          `INSERT INTO users (id, name, email, password_hash, role, institution, account_status, created_at, updated_at)
-           VALUES (?, 'Platform Administrator', ?, ?, 'admin', 'ExamAI Administration', 'active', ?, ?)`
-        ).run(adminId, adminEmail, passwordHash, now, now);
-        db.prepare(
-          `INSERT OR IGNORE INTO profiles (id, full_name, email, role, institution, account_status, created_at, updated_at)
-           VALUES (?, 'Platform Administrator', ?, 'admin', 'ExamAI Administration', 'active', ?, ?)`
-        ).run(adminId, adminEmail, now, now);
+    if (adminEmail) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
+        console.warn('ADMIN_EMAIL is set but is not a valid email address; skipping auto-admin provisioning.');
+      } else if (adminPassword.length < 8) {
+        console.warn('ADMIN_EMAIL is set, but ADMIN_PASSWORD must be at least 8 characters to auto-provision the admin account.');
+      } else {
+        const existing = db
+          .prepare('SELECT id, role, password_hash FROM users WHERE email = ?')
+          .get(adminEmail) as { id: string; role: string; password_hash: string } | undefined;
+        if (!existing) {
+          const adminId = `usr_admin_${crypto.randomUUID().slice(0, 8)}`;
+          const passwordHash = hashPassword(adminPassword);
+          db.prepare(
+            `INSERT INTO users (id, name, email, password_hash, role, institution, account_status, created_at, updated_at)
+             VALUES (?, 'Platform Administrator', ?, ?, 'admin', 'ExamAI Administration', 'active', ?, ?)`
+          ).run(adminId, adminEmail, passwordHash, now, now);
+          db.prepare(
+            `INSERT OR IGNORE INTO profiles (id, full_name, email, role, institution, account_status, created_at, updated_at)
+             VALUES (?, 'Platform Administrator', ?, 'admin', 'ExamAI Administration', 'active', ?, ?)`
+          ).run(adminId, adminEmail, now, now);
+        } else if (!existing.password_hash || !verifyPassword(adminPassword, existing.password_hash)) {
+          db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(
+            hashPassword(adminPassword),
+            now,
+            existing.id
+          );
+        }
       }
     }
   }
@@ -1496,34 +1694,113 @@ class ExamDataStore {
 
     const adminEmail = stripWrappingQuotes(process.env.ADMIN_EMAIL).trim().toLowerCase();
     const adminPassword = stripWrappingQuotes(process.env.ADMIN_PASSWORD);
-    if (adminEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) && adminPassword.length >= 8) {
-      const { data: existing } = await sb.from('users').select('id').eq('email', adminEmail).maybeSingle();
-      if (!existing) {
-        const adminId = `usr_admin_${crypto.randomUUID().slice(0, 8)}`;
-        await sb.from('users').insert({
-          id: adminId,
-          name: 'Platform Administrator',
-          email: adminEmail,
-          password_hash: hashPassword(adminPassword),
-          role: 'admin',
-          institution: 'ExamAI Administration',
-          account_status: 'active',
-          created_at: now,
-          updated_at: now,
-        });
-        await sb.from('profiles').upsert(
-          {
+    if (adminEmail) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
+        console.warn('ADMIN_EMAIL is set but is not a valid email address; skipping auto-admin provisioning.');
+      } else if (adminPassword.length < 8) {
+        console.warn('ADMIN_EMAIL is set, but ADMIN_PASSWORD must be at least 8 characters to auto-provision the admin account.');
+      } else {
+        const { data: existing } = await sb
+          .from('users')
+          .select('id, auth_user_id, password_hash, role')
+          .eq('email', adminEmail)
+          .maybeSingle();
+
+        let adminId = existing ? String(existing.id) : `usr_admin_${crypto.randomUUID().slice(0, 8)}`;
+        let existingAuthId = existing?.auth_user_id ? String(existing.auth_user_id) : '';
+        const passwordNeedsSync =
+          !existing || !existing.password_hash || !verifyPassword(adminPassword, String(existing.password_hash));
+
+        if (!existing) {
+          const { error: userErr } = await sb.from('users').insert({
             id: adminId,
-            full_name: 'Platform Administrator',
+            name: 'Platform Administrator',
             email: adminEmail,
+            password_hash: hashPassword(adminPassword),
             role: 'admin',
             institution: 'ExamAI Administration',
             account_status: 'active',
             created_at: now,
             updated_at: now,
-          },
-          { onConflict: 'id' }
-        );
+          });
+          if (userErr) {
+            console.warn('ADMIN_EMAIL auto-provisioning warning:', userErr.message);
+            return;
+          }
+          await sb.from('profiles').upsert(
+            {
+              id: adminId,
+              full_name: 'Platform Administrator',
+              email: adminEmail,
+              role: 'admin',
+              institution: 'ExamAI Administration',
+              account_status: 'active',
+              created_at: now,
+              updated_at: now,
+            },
+            { onConflict: 'id' }
+          );
+        } else if (passwordNeedsSync) {
+          await sb
+            .from('users')
+            .update({ password_hash: hashPassword(adminPassword), updated_at: now })
+            .eq('id', adminId);
+        }
+
+        // Also provision/sync in Supabase Auth so email+password sign-in works immediately
+        if (!existingAuthId || passwordNeedsSync) {
+          try {
+            let authId = existingAuthId;
+            if (!authId) {
+              const { data: createdAuth, error: createAuthErr } = await sb.auth.admin.createUser({
+                email: adminEmail,
+                password: adminPassword,
+                email_confirm: true,
+                user_metadata: {
+                  full_name: 'Platform Administrator',
+                  institution: 'ExamAI Administration',
+                },
+              });
+              if (createdAuth?.user?.id) {
+                authId = createdAuth.user.id;
+              } else if (createAuthErr) {
+                const { data: listData } = await sb.auth.admin.listUsers({ page: 1, perPage: 200 });
+                const matched = (listData?.users || []).find(
+                  (u) => (u.email || '').trim().toLowerCase() === adminEmail
+                );
+                if (matched?.id) {
+                  authId = matched.id;
+                }
+              }
+            }
+
+            if (authId) {
+              if (passwordNeedsSync || existingAuthId) {
+                await sb.auth.admin
+                  .updateUserById(authId, {
+                    password: adminPassword,
+                    email_confirm: true,
+                  })
+                  .catch(() => {});
+              }
+              if (authId !== existingAuthId) {
+                await sb
+                  .from('users')
+                  .update({ auth_user_id: authId, updated_at: now })
+                  .eq('id', adminId);
+                await sb
+                  .from('profiles')
+                  .update({ auth_user_id: authId, updated_at: now })
+                  .eq('id', adminId);
+              }
+            }
+          } catch (authSyncErr) {
+            console.warn(
+              'ADMIN_EMAIL Supabase Auth sync warning:',
+              authSyncErr instanceof Error ? authSyncErr.message : authSyncErr
+            );
+          }
+        }
       }
     }
   }

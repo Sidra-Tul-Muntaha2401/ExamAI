@@ -39,6 +39,12 @@ function AppRouter() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
+  useEffect(() => {
+    if (initialized) {
+      setPathname(normalizePath(window.location.pathname));
+    }
+  }, [initialized]);
+
   const navigate = useCallback((nextPath: string) => {
     const fullTarget = nextPath.startsWith('/') ? nextPath : `/${nextPath}`;
     const normalized = normalizePath(fullTarget);

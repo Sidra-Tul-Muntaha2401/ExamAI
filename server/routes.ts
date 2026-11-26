@@ -7,6 +7,7 @@ import {
   gradeObjectiveQuestions,
   isAttemptWithinSubmissionWindow,
   MAX_UPLOAD_BYTES,
+  sanitizePracticeQuizForStudent,
   seededShuffle,
   shouldAutoSubmitForViolations,
 } from '../src/lib/examRules.ts';
@@ -15,6 +16,7 @@ import type {
   Difficulty,
   ExamAttemptSession,
   ExamTakeQuestion,
+  PracticeQuizRecord,
   QuestionType,
   QuizQuestion,
   TeacherApprovalStatus,
@@ -206,9 +208,45 @@ export function createApiRouter(): express.Router {
   // =========================================================================
   // PUBLIC AUTH CONFIG & ADMIN BOOTSTRAP STATUS
   // =========================================================================
+  function resolvePublicAppUrl(req: Request): string | null {
+    const candidates = [
+      process.env.VITE_APP_URL,
+      process.env.APP_URL,
+      process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : undefined,
+      process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
+    ];
+    for (const raw of candidates) {
+      if (!raw) continue;
+      const cleaned = raw.trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '');
+      if (!cleaned) continue;
+      try {
+        const parsed = new URL(cleaned.startsWith('http') ? cleaned : `https://${cleaned}`);
+        if (parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+          return parsed.origin;
+        }
+      } catch {
+        // ignore invalid URL
+      }
+    }
+    const forwardedHost = req.headers['x-forwarded-host'];
+    const host = (typeof forwardedHost === 'string' ? forwardedHost.split(',')[0] : req.headers.host || '').trim();
+    if (host && !host.startsWith('localhost') && !host.startsWith('127.0.0.1')) {
+      const proto = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      return `${proto}://${host}`;
+    }
+    return null;
+  }
+
+  function isDemoLoginEnabled(): boolean {
+    if (process.env.DISABLE_DEMO_LOGIN === 'true') return false;
+    return process.env.ENABLE_DEMO_LOGIN === 'true';
+  }
+
   router.get(
     '/auth/public-config',
-    asyncHandler(async (_req: Request, res: Response) => {
+    asyncHandler(async (req: Request, res: Response) => {
       const [supa, settings] = await Promise.all([
         Promise.resolve(store.getSupabasePublicConfig()),
         domainStore.getPlatformSettings(),
@@ -216,10 +254,11 @@ export function createApiRouter(): express.Router {
       res.json({
         supabaseUrl: supa.url,
         supabaseAnonKey: supa.anonKey,
+        appUrl: resolvePublicAppUrl(req),
         allowTeacherRegistration: settings.allowTeacherRegistration,
         requireTeacherApproval: settings.requireTeacherApproval,
         allowPublicPractice: settings.allowPublicPractice,
-        allowDemoLogin: process.env.DISABLE_DEMO_LOGIN !== 'true',
+        allowDemoLogin: isDemoLoginEnabled(),
       });
     })
   );
@@ -234,6 +273,49 @@ export function createApiRouter(): express.Router {
         canClaimFirstAdmin: adminCount === 0,
         secretConfigured,
       });
+    })
+  );
+
+  router.post(
+    '/auth/check-registration',
+    authRateLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const roleRaw = typeof req.body?.role === 'string' ? req.body.role.trim().toLowerCase() : 'student';
+      const setupSecret = typeof req.body?.setupSecret === 'string' ? req.body.setupSecret.trim() : '';
+
+      if (roleRaw !== 'student' && roleRaw !== 'teacher' && roleRaw !== 'admin') {
+        res.status(400).json({ error: 'Role must be student, teacher, or admin.' });
+        return;
+      }
+
+      const settings = await domainStore.getPlatformSettings();
+      if (roleRaw === 'teacher' && !settings.allowTeacherRegistration) {
+        res.status(403).json({ error: 'Self-service teacher registration is currently disabled by administrator.' });
+        return;
+      }
+
+      if (roleRaw === 'admin') {
+        const adminCount = await domainStore.countAdminUsers();
+        if (adminCount > 0) {
+          const expectedSecret = (process.env.ADMIN_BOOTSTRAP_SECRET || '').trim();
+          if (!expectedSecret) {
+            res.status(403).json({
+              error:
+                'An Admin account already exists and ADMIN_BOOTSTRAP_SECRET is not configured on the server.',
+            });
+            return;
+          }
+          const aBuf = Buffer.from(setupSecret);
+          const bBuf = Buffer.from(expectedSecret);
+          const secretValid = aBuf.length === bBuf.length && crypto.timingSafeEqual(aBuf, bBuf);
+          if (!secretValid) {
+            res.status(403).json({ error: 'Invalid Admin Setup Secret.' });
+            return;
+          }
+        }
+      }
+
+      res.json({ ok: true });
     })
   );
 
@@ -457,7 +539,7 @@ export function createApiRouter(): express.Router {
     '/auth/demo-login',
     authRateLimiter,
     asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-      if (process.env.DISABLE_DEMO_LOGIN === 'true') {
+      if (!isDemoLoginEnabled()) {
         res.status(403).json({ error: 'Demo quick login is disabled in this environment.' });
         return;
       }
@@ -907,6 +989,47 @@ export function createApiRouter(): express.Router {
           count,
           topic: topic || doc.title,
         });
+
+        if (req.user!.role === 'student') {
+          const requestedTitle =
+            typeof req.body?.title === 'string' && req.body.title.trim().length >= 2
+              ? req.body.title.trim()
+              : `${doc.title} — ${difficultyRaw} Practice Exam`;
+          const quizTopic = topic || doc.title;
+          const id = `pq_${crypto.randomUUID()}`;
+          const createdAt = new Date().toISOString();
+          const normalizedQuestions: QuizQuestion[] = questions.map((q, idx) => ({
+            ...q,
+            id: q.id || `pq_item_${idx + 1}`,
+            marks:
+              Number(q.marks) ||
+              (q.questionType === 'long_answer'
+                ? 10
+                : q.questionType === 'short_answer'
+                  ? 5
+                  : q.questionType === 'true_false'
+                    ? 1
+                    : 2),
+          }));
+
+          const createdQuiz: PracticeQuizRecord = {
+            id,
+            studentId: req.user!.id,
+            documentId: doc.id,
+            title: requestedTitle,
+            topic: quizTopic,
+            difficulty: difficultyRaw as Difficulty,
+            questionType: questionTypeRaw as QuestionType | 'mixed',
+            questions: normalizedQuestions,
+            createdAt,
+          };
+
+          await store.createPracticeQuiz(createdQuiz);
+          res.locals.logDetails = `Prepared student practice exam "${requestedTitle}" (${normalizedQuestions.length} ${questionTypeRaw}, ${difficultyRaw}) from "${doc.title}"`;
+          res.status(201).json({ quiz: sanitizePracticeQuizForStudent(createdQuiz) });
+          return;
+        }
+
         res.locals.logDetails = `Generated ${questions.length} ${questionTypeRaw} (${difficultyRaw}) from "${doc.title}"`;
         res.json({ questions });
       } catch (err) {
@@ -1044,7 +1167,7 @@ export function createApiRouter(): express.Router {
           avgPracticePercentage,
         },
         classes,
-        practiceQuizzes,
+        practiceQuizzes: practiceQuizzes.map(sanitizePracticeQuizForStudent),
         availableExams,
         completedExams,
         recentActivity: recentActivity.slice(0, 8),
@@ -1157,31 +1280,23 @@ export function createApiRouter(): express.Router {
                 : 2),
       }));
 
-      await store.createPracticeQuiz({
+      const createdQuiz: PracticeQuizRecord = {
         id,
         studentId: req.user!.id,
         documentId,
         title,
         topic,
         difficulty,
-        questionType,
+        questionType: questionType as QuestionType | 'mixed',
         questions: normalizedQuestions,
         createdAt,
-      });
+      };
+
+      await store.createPracticeQuiz(createdQuiz);
 
       res.locals.logDetails = `${title} (${normalizedQuestions.length} questions)`;
       res.status(201).json({
-        quiz: {
-          id,
-          studentId: req.user!.id,
-          documentId,
-          title,
-          topic,
-          difficulty,
-          questionType,
-          questions: normalizedQuestions,
-          createdAt,
-        },
+        quiz: sanitizePracticeQuizForStudent(createdQuiz),
       });
     })
   );
@@ -1204,7 +1319,7 @@ export function createApiRouter(): express.Router {
         res.status(404).json({ error: 'Practice quiz not found.' });
         return;
       }
-      res.json({ quiz });
+      res.json({ quiz: sanitizePracticeQuizForStudent(quiz) });
     })
   );
 

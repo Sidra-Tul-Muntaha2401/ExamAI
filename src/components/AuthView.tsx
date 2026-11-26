@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -32,6 +32,8 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
   const {
     user,
     loading,
+    isRecoveryMode,
+    recoveryEmail,
     publicConfig,
     adminBootstrap,
     refreshAdminBootstrap,
@@ -39,13 +41,20 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
     demoLogin,
     register,
     claimAdmin,
+    resendConfirmation,
     forgotPassword,
     resetPassword,
   } = useAuth();
 
   const [selectedRole, setSelectedRole] = useState<UserRole>('student');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(() => {
+    if (typeof window !== 'undefined' && mode === 'login') {
+      const p = new URLSearchParams(window.location.search);
+      return (p.get('email') || '').trim();
+    }
+    return '';
+  });
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [institution, setInstitution] = useState('');
@@ -53,6 +62,7 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
   const [bio, setBio] = useState('');
   const [setupSecret, setSetupSecret] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
 
   const [resetToken, setResetToken] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -62,14 +72,55 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
     return '';
   });
   const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [previewResetToken, setPreviewResetToken] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  const isSupabaseEmailFlow = Boolean(publicConfig.supabaseUrl && publicConfig.supabaseAnonKey);
+
   useEffect(() => {
     setError(null);
     setSuccessMsg(null);
+    if (typeof window !== 'undefined' && mode === 'login') {
+      const searchParams = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const prefilledEmail = (searchParams.get('email') || '').trim();
+      if (prefilledEmail) {
+        setEmail(prefilledEmail);
+      }
+
+      const authError =
+        searchParams.get('error_description') || hashParams.get('error_description');
+      const isConfirmed =
+        searchParams.get('confirmed') === '1' ||
+        searchParams.get('type') === 'signup' ||
+        hashParams.get('type') === 'signup';
+      const isPasswordReset = searchParams.get('reset') === '1';
+
+      if (authError) {
+        setError(authError);
+      } else if (isPasswordReset) {
+        setSuccessMsg(
+          prefilledEmail
+            ? `Password updated for ${prefilledEmail}. Please sign in with your new password.`
+            : 'Password updated! Please sign in with your new password.'
+        );
+        if (prefilledEmail) {
+          setTimeout(() => passwordInputRef.current?.focus(), 0);
+        }
+      } else if (isConfirmed) {
+        setSuccessMsg(
+          prefilledEmail
+            ? `Email confirmed for ${prefilledEmail}. Please enter your password to sign in.`
+            : 'Email confirmed! Please enter your password to sign in.'
+        );
+        if (prefilledEmail) {
+          setTimeout(() => passwordInputRef.current?.focus(), 0);
+        }
+      }
+    }
   }, [mode]);
 
   useEffect(() => {
@@ -108,6 +159,7 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSuccessMsg(null);
 
     if (password.length < 8) {
       setError('Password must be at least 8 characters long.');
@@ -127,7 +179,7 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
     }
 
     try {
-      const created = await register({
+      const outcome = await register({
         name: name.trim(),
         email: email.trim(),
         password,
@@ -137,7 +189,16 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
         bio: selectedRole === 'teacher' ? bio.trim() : undefined,
         setupSecret: selectedRole === 'admin' && !adminBootstrap.canClaimFirstAdmin ? setupSecret.trim() : undefined,
       });
-      onNavigate(getWorkspacePath(created.role));
+      if (outcome.user) {
+        onNavigate(getWorkspacePath(outcome.user.role));
+      } else if (outcome.confirmationRequired) {
+        setSuccessMsg(
+          outcome.message ||
+            'Account created. Please check your email and confirm your address before signing in.'
+        );
+        setPassword('');
+        setConfirmPassword('');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed.');
     }
@@ -146,6 +207,7 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
   const handleAdminClaimSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSuccessMsg(null);
     if (password.length < 8) {
       setError('Password must be at least 8 characters long.');
       return;
@@ -155,15 +217,35 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
       return;
     }
     try {
-      const created = await claimAdmin({
+      const outcome = await claimAdmin({
         name: name.trim(),
         email: email.trim(),
         password,
         institution: institution.trim() || 'ExamAI Administration',
       });
-      onNavigate(getWorkspacePath(created.role));
+      if (outcome.user) {
+        onNavigate(getWorkspacePath(outcome.user.role));
+      } else if (outcome.confirmationRequired) {
+        setSuccessMsg(
+          outcome.message ||
+            'Admin account created. Please confirm your email address before signing in.'
+        );
+        setPassword('');
+        setConfirmPassword('');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to claim Admin account.');
+    }
+  };
+
+  const handleResendConfirmation = async () => {
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const message = await resendConfirmation(email.trim());
+      setSuccessMsg(message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to resend confirmation email.');
     }
   };
 
@@ -192,10 +274,20 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
       setError('New password must be at least 8 characters long.');
       return;
     }
+    if (newPassword !== confirmNewPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
     try {
       const res = await resetPassword(resetToken.trim(), newPassword);
-      setSuccessMsg(res.message);
       setNewPassword('');
+      setConfirmNewPassword('');
+      if (res.email) {
+        const params = new URLSearchParams({ reset: '1', email: res.email });
+        onNavigate(`/login?${params.toString()}`);
+        return;
+      }
+      setSuccessMsg(res.message);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Password reset failed.');
     }
@@ -339,7 +431,22 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
             {error && (
               <div className="p-3.5 rounded-xl bg-[#C64B4B]/10 border border-[#C64B4B]/30 text-xs font-medium text-[#C64B4B] flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{error}</span>
+                <div className="space-y-1.5">
+                  <span>{error}</span>
+                  {mode === 'login' &&
+                    error.toLowerCase().includes('confirm your email') &&
+                    email.trim().includes('@') && (
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => void handleResendConfirmation()}
+                          className="underline font-semibold text-[#C64B4B] hover:opacity-80"
+                        >
+                          Resend confirmation email
+                        </button>
+                      </div>
+                    )}
+                </div>
               </div>
             )}
 
@@ -380,6 +487,7 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
                     </div>
                     <div className="relative">
                       <input
+                        ref={passwordInputRef}
                         type={showPassword ? 'text' : 'password'}
                         required
                         autoComplete="current-password"
@@ -759,24 +867,29 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
               <div className="space-y-4">
                 <form onSubmit={handleForgotSubmit} className="space-y-4">
                   <p className="text-xs text-[#77736C] leading-relaxed">
-                    Enter the email address associated with your account to generate a secure password reset token.
+                    {isSupabaseEmailFlow
+                      ? 'Enter the email address associated with your account and we will send you a secure password reset link.'
+                      : 'Enter the email address associated with your account to generate a secure password reset token.'}
                   </p>
                   <div>
                     <label className="block text-xs font-semibold text-[#66543A] mb-1">Email Address</label>
                     <input
                       type="email"
                       required
+                      autoComplete="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="you@university.edu"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3DED3] text-sm"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3DED3] text-sm focus:outline-none focus:border-[#C9A45C]"
                     />
                   </div>
                   <button
                     type="submit"
-                    className="w-full py-3 rounded-xl bg-[#171717] hover:bg-[#303030] text-white text-sm font-semibold"
+                    disabled={loading}
+                    className="w-full py-3 rounded-xl bg-[#171717] hover:bg-[#303030] disabled:opacity-60 text-white text-sm font-semibold flex items-center justify-center gap-2"
                   >
-                    Request Reset Token
+                    {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {isSupabaseEmailFlow ? 'Send Password Reset Link' : 'Request Reset Token'}
                   </button>
                 </form>
 
@@ -803,9 +916,11 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
                   <button type="button" onClick={() => onNavigate('/login')} className="text-[#66543A] font-semibold hover:underline">
                     Back to Login
                   </button>
-                  <button type="button" onClick={() => onNavigate('/reset-password')} className="text-[#77736C] hover:text-[#252525]">
-                    Already have a token?
-                  </button>
+                  {!isSupabaseEmailFlow && (
+                    <button type="button" onClick={() => onNavigate('/reset-password')} className="text-[#77736C] hover:text-[#252525]">
+                      Already have a token?
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -813,34 +928,79 @@ export function AuthView({ mode, onNavigate }: AuthViewProps) {
             {/* RESET PASSWORD */}
             {mode === 'reset-password' && (
               <div className="space-y-4">
-                <form onSubmit={handleResetSubmit} className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#66543A] mb-1">Reset Token</label>
-                    <input
-                      type="text"
-                      required
-                      value={resetToken}
-                      onChange={(e) => setResetToken(e.target.value)}
-                      placeholder="Paste reset token"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3DED3] text-sm font-mono"
-                    />
+                {isRecoveryMode ? (
+                  <div className="p-3.5 rounded-xl bg-[#F5F1E8] border border-[#E3DED3] text-xs text-[#66543A]">
+                    Verified password recovery session{recoveryEmail ? ` for ${recoveryEmail}` : ''}. Choose a new password below.
                   </div>
+                ) : isSupabaseEmailFlow && !resetToken ? (
+                  <div className="p-3.5 rounded-xl bg-[#F5F1E8] border border-[#E3DED3] text-xs text-[#77736C]">
+                    Open this page from your password reset email link, or{' '}
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('/forgot-password')}
+                      className="font-semibold text-[#66543A] hover:underline"
+                    >
+                      request a new reset link
+                    </button>
+                    .
+                  </div>
+                ) : null}
+
+                <form onSubmit={handleResetSubmit} className="space-y-4">
+                  {!isRecoveryMode && (!isSupabaseEmailFlow || Boolean(resetToken)) && (
+                    <div>
+                      <label className="block text-xs font-semibold text-[#66543A] mb-1">Reset Token</label>
+                      <input
+                        type="text"
+                        required
+                        value={resetToken}
+                        onChange={(e) => setResetToken(e.target.value)}
+                        placeholder="Paste reset token"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3DED3] text-sm font-mono focus:outline-none focus:border-[#C9A45C]"
+                      />
+                    </div>
+                  )}
                   <div>
                     <label className="block text-xs font-semibold text-[#66543A] mb-1">New Password (8+ chars)</label>
                     <input
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
                       required
                       minLength={8}
+                      autoComplete="new-password"
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       placeholder="Enter new password"
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3DED3] text-sm"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3DED3] text-sm focus:outline-none focus:border-[#C9A45C]"
                     />
                   </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#66543A] mb-1">Confirm New Password</label>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      minLength={8}
+                      autoComplete="new-password"
+                      value={confirmNewPassword}
+                      onChange={(e) => setConfirmNewPassword(e.target.value)}
+                      placeholder="Repeat new password"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3DED3] text-sm focus:outline-none focus:border-[#C9A45C]"
+                    />
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-xs text-[#77736C] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showPassword}
+                      onChange={(e) => setShowPassword(e.target.checked)}
+                      className="rounded border-[#E3DED3]"
+                    />
+                    Show password
+                  </label>
                   <button
                     type="submit"
-                    className="w-full py-3 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold"
+                    disabled={loading}
+                    className="w-full py-3 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] disabled:opacity-60 text-[#171717] text-sm font-semibold flex items-center justify-center gap-2"
                   >
+                    {loading && <Loader2 className="w-4 h-4 animate-spin" />}
                     Update Password
                   </button>
                 </form>

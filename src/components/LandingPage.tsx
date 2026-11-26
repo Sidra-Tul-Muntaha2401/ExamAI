@@ -26,35 +26,41 @@ interface LandingPageProps {
 
 const FAQS = [
   {
-    q: 'Which document formats can students and teachers upload?',
-    a: 'ExamAI supports text-based PDF (.pdf) and Microsoft Word (.docx) files up to 10 MB. Text is extracted on the server and previewed before generating questions. Scanned image-only PDFs without embedded text are detected and reported clearly because ExamAI does not run OCR.',
+    q: 'Which course document formats are supported?',
+    a: 'Students and instructors can upload text-based PDF (.pdf) and Microsoft Word (.docx) files up to 10 MB. ExamAI previews the extracted text before question generation and clearly alerts you if a scanned image-only PDF has no selectable text.',
   },
   {
-    q: 'How does Groq AI generate questions from my notes?',
-    a: 'Your extracted document text is sent securely from the backend server to the Groq API using your server-side GROQ_API_KEY. Questions are validated against a strict JSON schema for MCQs, True/False, Short Answer, and Long Answer formats before you review or save them.',
+    q: 'How are questions generated from uploaded lecture notes?',
+    a: 'ExamAI analyzes your extracted reading material and drafts structured Multiple Choice, True/False, Short Answer, and Long Answer items—alongside explanations and marking guidance—for you to edit or approve before saving.',
   },
   {
-    q: 'How are official exams secured against cheating?',
-    a: 'Teachers can enable question order randomization, MCQ option shuffling, server-side duration and deadline enforcement, and browser tab-visibility / focus-loss logging. ExamAI never secretly accesses your camera or microphone, and clearly explains that browser event tracking is an integrity aid rather than an absolute guarantee.',
+    q: 'What integrity safeguards are included for formal examinations?',
+    a: 'Instructors can randomize question order and choice sequences per student, enforce strict exam durations and submission deadlines, keep answer keys hidden until grading, and log browser tab-leave events without requiring webcam or microphone access.',
   },
   {
-    q: 'Are student practice quizzes separate from official teacher exams?',
-    a: 'Yes. Student study documents and practice quizzes are private to each student account. Official examinations, question banks, grading rubrics, and submissions are managed strictly by teachers with server-side role verification.',
+    q: 'Are student practice sets separated from official course exams?',
+    a: 'Yes. Personal study documents and practice quizzes remain private to each student account, while official course rosters, question banks, timed examinations, and grading rubrics are managed exclusively by verified faculty.',
   },
 ];
 
-const SAMPLE_TESTIMONIALS = [
+const INSTITUTIONAL_ROLES = [
   {
-    name: 'Dr. Priya Nair',
-    role: 'Associate Professor of Computer Science · Sample Persona',
-    quote:
-      'Before ExamAI, drafting randomized midterm variants and grading short-answer rubrics took two weekends. Uploading our lecture PDFs into the Question Bank cut preparation time from 6 hours to 40 minutes while keeping manual rubric control.',
+    title: 'For Students',
+    subtitle: 'Independent study & course readiness',
+    description:
+      'Enroll in courses via class codes, convert personal lecture notes into targeted practice sets, review detailed explanations, and track assessment scores across terms.',
   },
   {
-    name: 'Daniel Okafor',
-    role: 'Undergraduate Biology Student · Sample Persona',
-    quote:
-      'Uploading my cellular respiration DOCX notes and drilling Medium and Hard MCQs with immediate explanations helped raise my practice quiz accuracy from 68% to 91% before finals.',
+    title: 'For Faculty & Instructors',
+    subtitle: 'Question banks & guided evaluation',
+    description:
+      'Organize class rosters, author exams directly from course readings, configure time limits and randomization rules, and grade written essays using structured rubrics.',
+  },
+  {
+    title: 'For Academic Administrators',
+    subtitle: 'Verification & institutional governance',
+    description:
+      'Review and approve instructor credentials before exam publishing, manage enrollment policies and integrity defaults, and oversee institutional activity logs.',
   },
 ];
 
@@ -67,7 +73,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
 
   return (
     <div className="min-h-screen bg-[#FFFFFF] text-[#252525]">
-      {/* 3-Zone Top Bar Contract */}
+      {/* 3-Zone Top Bar */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-[#E3DED3]">
         <div className="max-w-[1280px] mx-auto px-6 h-16 flex items-center justify-between gap-8">
           <a
@@ -84,16 +90,16 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
 
           <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-[#77736C]">
             <a href="#features" className="hover:text-[#252525] transition-colors whitespace-nowrap shrink-0">
-              Features
+              Capabilities
             </a>
             <a href="#modes" className="hover:text-[#252525] transition-colors whitespace-nowrap shrink-0">
-              Study &amp; Teaching
+              Workspaces
             </a>
             <a href="#workflow" className="hover:text-[#252525] transition-colors whitespace-nowrap shrink-0">
-              How It Works
+              Workflow
             </a>
             <a href="#showcase" className="hover:text-[#252525] transition-colors whitespace-nowrap shrink-0">
-              AI Preview
+              Preview
             </a>
             <a href="#faq" className="hover:text-[#252525] transition-colors whitespace-nowrap shrink-0">
               FAQ
@@ -135,14 +141,14 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                   onClick={() => onNavigate('/login')}
                   className="px-3.5 py-2 rounded-lg border border-[#E3DED3] hover:bg-[#F5F1E8] text-sm font-semibold text-[#252525] transition-colors whitespace-nowrap shrink-0"
                 >
-                  Login
+                  Sign In
                 </button>
                 <button
                   type="button"
                   onClick={() => onNavigate('/register')}
                   className="px-4 py-2 rounded-lg bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold transition-colors whitespace-nowrap shrink-0"
                 >
-                  Register
+                  Get Started
                 </button>
               </>
             )}
@@ -155,13 +161,13 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
         <div className="max-w-[1280px] mx-auto px-6 py-16 lg:py-24 grid grid-cols-1 lg:grid-cols-12 gap-12 items-stretch">
           <div className="lg:col-span-6 flex flex-col justify-center space-y-6">
             <p className="text-sm font-semibold tracking-wide text-[#DFC58E]">
-              Multi-User Academic Assessment Platform
+              Academic Study &amp; Examination Suite
             </p>
             <h1 className="text-[clamp(2.35rem,4.2vw,3.75rem)] font-display font-bold leading-[1.08] tracking-tight text-balance">
-              Turn lecture PDFs and study notes into graded exams in seconds.
+              Thoughtful assessments built from your own course materials.
             </h1>
             <p className="text-base lg:text-lg text-[#D6D0C4] leading-relaxed max-w-xl">
-              ExamAI equips students with classes, progress analytics, and practice quizzes, empowers teachers with timed exams and rubrics, and gives administrators full platform oversight.
+              Upload lecture notes, syllabi, or study guides to create structured practice sets and formal timed exams—with instant objective scoring and faculty grading rubrics.
             </p>
             <div className="flex flex-wrap items-center gap-3 pt-2">
               {user ? (
@@ -170,7 +176,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                   onClick={() => onNavigate(dashboardPath)}
                   className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] font-semibold text-sm transition-colors whitespace-nowrap"
                 >
-                  Open {user.role === 'admin' ? 'Admin Console' : user.role === 'teacher' ? 'Teacher Workspace' : 'Student Workspace'}
+                  Open {user.role === 'admin' ? 'Admin Console' : user.role === 'teacher' ? 'Faculty Workspace' : 'Student Workspace'}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               ) : (
@@ -201,11 +207,11 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
               </button>
             </div>
             <div className="pt-4 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-x-5 gap-y-1.5 text-xs text-[#B5B0A6]">
-              <span>PDF &amp; DOCX Extraction</span>
+              <span>Course Document Upload</span>
               <span aria-hidden="true" className="hidden sm:inline">·</span>
-              <span>Groq JSON Question Engine</span>
+              <span>Four Question Formats</span>
               <span aria-hidden="true" className="hidden sm:inline">·</span>
-              <span>Server-Validated Timers</span>
+              <span>Guided Faculty Grading</span>
             </div>
           </div>
 
@@ -222,9 +228,9 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
               ) : (
                 <div className="p-8 text-center space-y-3">
                   <GraduationCap className="w-12 h-12 text-[#C9A45C] mx-auto" />
-                  <p className="font-display font-semibold text-lg text-white">ExamAI Assessment Studio</p>
+                  <p className="font-display font-semibold text-lg text-white">ExamAI Academic Studio</p>
                   <p className="text-sm text-[#D6D0C4]">
-                    Upload PDF/DOCX materials, generate structured questions, and deliver timed exams.
+                    Prepare course materials, author structured exams, and evaluate student responses in one workspace.
                   </p>
                 </div>
               )}
@@ -237,19 +243,19 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
           <div className="max-w-[1280px] mx-auto px-6 py-6 grid grid-cols-2 lg:grid-cols-4 gap-6">
             <div>
               <div className="font-mono text-2xl font-bold text-[#DFC58E] tabular-nums">4 Formats</div>
-              <div className="text-xs text-[#D6D0C4] mt-1">MCQ, True/False, Short &amp; Long Answer</div>
+              <div className="text-xs text-[#D6D0C4] mt-1">Multiple Choice, True/False, Short &amp; Long Answer</div>
             </div>
             <div>
-              <div className="font-mono text-2xl font-bold text-white tabular-nums">PDF + DOCX</div>
-              <div className="text-xs text-[#D6D0C4] mt-1">Server-side text extraction up to 10 MB</div>
+              <div className="font-mono text-2xl font-bold text-white tabular-nums">PDF + Word</div>
+              <div className="text-xs text-[#D6D0C4] mt-1">Direct import from syllabi, slides, and notes</div>
             </div>
             <div>
-              <div className="font-mono text-2xl font-bold text-[#C9A45C] tabular-nums">Auto + Manual</div>
-              <div className="text-xs text-[#D6D0C4] mt-1">Instant MCQ grading &amp; descriptive rubrics</div>
+              <div className="font-mono text-2xl font-bold text-[#C9A45C] tabular-nums">Hybrid Grading</div>
+              <div className="text-xs text-[#D6D0C4] mt-1">Instant objective scoring with faculty essay review</div>
             </div>
             <div>
-              <div className="font-mono text-2xl font-bold text-[#DFC58E] tabular-nums">Zero-Leak</div>
-              <div className="text-xs text-[#D6D0C4] mt-1">Answer keys stripped during active exams</div>
+              <div className="font-mono text-2xl font-bold text-[#DFC58E] tabular-nums">Protected Keys</div>
+              <div className="text-xs text-[#D6D0C4] mt-1">Answer keys remain hidden throughout active exams</div>
             </div>
           </div>
         </div>
@@ -258,9 +264,9 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
       {/* Core Feature Bento Grid */}
       <section id="features" className="max-w-[1280px] mx-auto px-6 py-20">
         <div className="max-w-2xl mb-12">
-          <p className="text-sm font-semibold text-[#66543A] mb-2">Built for Real Academic Rigor</p>
+          <p className="text-sm font-semibold text-[#66543A] mb-2">Academic Rigor by Design</p>
           <h2 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-[#252525] text-balance">
-            Everything needed from document upload to final gradebook feedback.
+            From course readings to verified gradebooks in one unified platform.
           </h2>
         </div>
 
@@ -271,18 +277,18 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                 <FileText className="w-5 h-5" />
               </div>
               <h3 className="text-xl font-display font-bold text-[#252525] mb-2">
-                01. Grounded Document-to-Question Pipeline
+                01. Material-Grounded Question Authoring
               </h3>
               <p className="text-[#252525]/85 text-sm leading-relaxed">
-                Upload lecture slides exported as PDF or course notes in DOCX. ExamAI extracts and previews the exact source text before sending it to Groq AI with strict JSON schema validation—never fabricating unseen content.
+                Upload lecture slides in PDF or course notes in Word format. Inspect the extracted source text and generate draft questions strictly anchored to your curriculum before adding them to an exam or study set.
               </p>
             </div>
             <div className="mt-6 pt-5 border-t border-[#E3DED3] flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-[#66543A]">
-              <span>Edit prompts inline</span>
+              <span>Edit wording inline</span>
               <span aria-hidden="true">·</span>
-              <span>Adjust difficulty &amp; marks</span>
+              <span>Adjust marks &amp; difficulty</span>
               <span aria-hidden="true">·</span>
-              <span>Regenerate or add manually</span>
+              <span>Add custom questions</span>
             </div>
           </div>
 
@@ -292,14 +298,14 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                 <Clock className="w-5 h-5" />
               </div>
               <h3 className="text-xl font-display font-bold text-[#252525] mb-2">
-                02. Distraction-Free Timed Exam Room
+                02. Focused, Timed Examination Rooms
               </h3>
               <p className="text-[#77736C] text-sm leading-relaxed">
-                Students take official exams inside a calm, clutter-free workspace with live server-verified countdowns, automatic answer persistence across refreshes, and explicit submission confirmation.
+                Students complete formal assessments inside a calm, distraction-free workspace with live countdown timers, automatic answer saving across page refreshes, and clear submission confirmation.
               </p>
             </div>
             <div className="mt-6 pt-5 border-t border-[#E3DED3] text-xs font-medium text-[#77736C]">
-              Server blocks late answer edits after expiry
+              Enforces time limits and closing deadlines automatically
             </div>
           </div>
 
@@ -309,14 +315,14 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                 <ShieldCheck className="w-5 h-5" />
               </div>
               <h3 className="text-xl font-display font-bold text-[#252525] mb-2">
-                03. Practical Exam Integrity Controls
+                03. Practical Assessment Integrity
               </h3>
               <p className="text-[#77736C] text-sm leading-relaxed">
-                Shuffle question sequences and MCQ options per attempt, strip answer keys from client payloads during active sessions, and log browser tab switches or focus-loss warnings without invasive camera access.
+                Randomize question order and multiple-choice options per student, keep answer keys strictly off student devices during active sessions, and record tab-leave notices without invasive camera access.
               </p>
             </div>
             <div className="mt-6 pt-5 border-t border-[#E3DED3] text-xs font-medium text-[#77736C]">
-              Configurable per exam by the instructor
+              Configured individually per exam by the instructor
             </div>
           </div>
 
@@ -326,18 +332,18 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                 <GraduationCap className="w-5 h-5" />
               </div>
               <h3 className="text-xl font-display font-bold mb-2">
-                04. Hybrid Objective Grading &amp; Descriptive Rubrics
+                04. Instant Objective Scoring &amp; Written Rubrics
               </h3>
               <p className="text-[#D6D0C4] text-sm leading-relaxed">
-                Multiple-choice and True/False items grade instantaneously. Short and long descriptive responses enter the teacher evaluation queue alongside model answers and marking guidance for transparent feedback.
+                Multiple-choice and True/False items grade immediately upon submission. Short and long written responses route directly to the faculty grading queue alongside reference answers and marking guides.
               </p>
             </div>
             <div className="mt-6 pt-5 border-t border-[#303030] flex flex-wrap gap-x-5 gap-y-2 text-xs font-medium text-[#B5B0A6]">
               <span>Instant MCQ scoring</span>
               <span aria-hidden="true">·</span>
-              <span>Per-question teacher marks</span>
+              <span>Per-question faculty marks</span>
               <span aria-hidden="true">·</span>
-              <span>Pass/Fail analytics</span>
+              <span>Cohort score analytics</span>
             </div>
           </div>
         </div>
@@ -347,14 +353,14 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
       <section id="modes" className="bg-[#F5F1E8] border-y border-[#E3DED3] py-20">
         <div className="max-w-[1280px] mx-auto px-6">
           <div className="max-w-2xl mb-12">
-            <p className="text-sm font-semibold text-[#66543A] mb-2">Two Dedicated Workspaces</p>
+            <p className="text-sm font-semibold text-[#66543A] mb-2">Dedicated Workspaces</p>
             <h2 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-[#252525] text-balance">
-              Tailored experiences for self-study and classroom assessment.
+              Purpose-built for independent study and formal instruction.
             </h2>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Student Study Mode */}
+            {/* Student Workspace */}
             <div className="bg-white border border-[#E3DED3] rounded-2xl p-8 space-y-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -362,8 +368,8 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                     <BookOpen className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="text-xl font-display font-bold text-[#252525]">Study Mode — Students</h3>
-                    <p className="text-xs text-[#77736C]">Private study materials &amp; practice</p>
+                    <h3 className="text-xl font-display font-bold text-[#252525]">Student Workspace</h3>
+                    <p className="text-xs text-[#77736C]">Course enrollments, practice &amp; results</p>
                   </div>
                 </div>
               </div>
@@ -371,19 +377,19 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
               <ul className="space-y-3 text-sm text-[#252525]/85">
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#4476A8] shrink-0 mt-0.5" />
-                  <span>Upload personal lecture PDFs and DOCX study guides</span>
+                  <span>Join active courses using instructor enrollment codes</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#4476A8] shrink-0 mt-0.5" />
-                  <span>Generate practice quizzes by topic and Easy, Medium, or Hard difficulty</span>
+                  <span>Generate private practice quizzes by topic and difficulty level</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#4476A8] shrink-0 mt-0.5" />
-                  <span>Attempt quizzes interactively and review explanations immediately</span>
+                  <span>Review answer explanations immediately after each practice session</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#4476A8] shrink-0 mt-0.5" />
-                  <span>Take official assigned exams and track score history over time</span>
+                  <span>Complete assigned exams and monitor score progression over time</span>
                 </li>
               </ul>
 
@@ -396,7 +402,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
               </button>
             </div>
 
-            {/* Teacher Teaching Mode */}
+            {/* Faculty Workspace */}
             <div className="bg-white border border-[#E3DED3] rounded-2xl p-8 space-y-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -404,8 +410,8 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                     <GraduationCap className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="text-xl font-display font-bold text-[#252525]">Teaching Mode — Teachers</h3>
-                    <p className="text-xs text-[#77736C]">Question banks, official exams &amp; grading</p>
+                    <h3 className="text-xl font-display font-bold text-[#252525]">Faculty Workspace</h3>
+                    <p className="text-xs text-[#77736C]">Question banks, timed exams &amp; rubrics</p>
                   </div>
                 </div>
               </div>
@@ -413,19 +419,19 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
               <ul className="space-y-3 text-sm text-[#252525]/85">
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#66543A] shrink-0 mt-0.5" />
-                  <span>Build a reusable Question Bank from uploaded teaching materials</span>
+                  <span>Curate reusable Question Banks from course documents</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#66543A] shrink-0 mt-0.5" />
-                  <span>Compose official exams with custom durations, passing marks, and deadlines</span>
+                  <span>Publish formal exams with durations, passing thresholds, and deadlines</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#66543A] shrink-0 mt-0.5" />
-                  <span>Configure question/option randomization and tab-switch warnings</span>
+                  <span>Configure question shuffling, option order, and integrity notices</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[#66543A] shrink-0 mt-0.5" />
-                  <span>Evaluate descriptive answers with marks, rubrics, and written feedback</span>
+                  <span>Evaluate descriptive essays with rubric guidance and written feedback</span>
                 </li>
               </ul>
 
@@ -434,7 +440,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                 onClick={() => onNavigate(user?.role === 'teacher' ? '/teacher' : '/register')}
                 className="w-full py-3 px-4 rounded-xl bg-[#C9A45C] hover:bg-[#DFC58E] text-[#171717] text-sm font-semibold transition-colors"
               >
-                {user?.role === 'teacher' ? 'Open Teacher Workspace' : 'Register as Teacher'}
+                {user?.role === 'teacher' ? 'Open Faculty Workspace' : 'Register as Instructor'}
               </button>
             </div>
           </div>
@@ -444,32 +450,32 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
       {/* How It Works */}
       <section id="workflow" className="max-w-[1280px] mx-auto px-6 py-20">
         <div className="max-w-2xl mb-12">
-          <p className="text-sm font-semibold text-[#66543A] mb-2">How ExamAI Works</p>
+          <p className="text-sm font-semibold text-[#66543A] mb-2">Streamlined Workflow</p>
           <h2 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-[#252525] text-balance">
-            Three structured steps from raw syllabus to verified scores.
+            Three steps from syllabus notes to finalized grades.
           </h2>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="p-7 rounded-2xl border border-[#E3DED3] bg-white space-y-3">
             <span className="font-mono text-sm font-bold text-[#66543A]">Step 01</span>
-            <h3 className="text-lg font-display font-bold text-[#252525]">Upload PDF or DOCX</h3>
+            <h3 className="text-lg font-display font-bold text-[#252525]">Import Course Materials</h3>
             <p className="text-sm text-[#77736C] leading-relaxed">
-              The backend validates file size and format, extracts clean prose via PDF/Word parsers, and lets you inspect the extracted source text immediately.
+              Upload text-based PDF or Word documents and inspect the extracted syllabus prose directly before generating questions.
             </p>
           </div>
           <div className="p-7 rounded-2xl border border-[#E3DED3] bg-white space-y-3">
             <span className="font-mono text-sm font-bold text-[#4476A8]">Step 02</span>
-            <h3 className="text-lg font-display font-bold text-[#252525]">Generate &amp; Refine</h3>
+            <h3 className="text-lg font-display font-bold text-[#252525]">Compose &amp; Refine</h3>
             <p className="text-sm text-[#77736C] leading-relaxed">
-              Choose difficulty, topic, and question type. Groq generates structured JSON questions that you can edit, delete, or supplement manually before saving.
+              Select topic focus, difficulty level, and question formats, then edit wording, point values, and marking guides as needed.
             </p>
           </div>
           <div className="p-7 rounded-2xl border border-[#E3DED3] bg-white space-y-3">
             <span className="font-mono text-sm font-bold text-[#25845D]">Step 03</span>
             <h3 className="text-lg font-display font-bold text-[#252525]">Deliver &amp; Evaluate</h3>
             <p className="text-sm text-[#77736C] leading-relaxed">
-              Students complete timed assessments with auto-saved progress. Objective items score immediately while descriptive essays route to teacher evaluation.
+              Assign exams to classes with timed windows and auto-saved progress. Objective items grade instantly while essays enter faculty review.
             </p>
           </div>
         </div>
@@ -481,13 +487,13 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
           <div className="lg:col-span-5 space-y-5">
             <div className="inline-flex items-center gap-2 text-xs font-semibold text-[#DFC58E]">
               <Sparkles className="w-4 h-4" />
-              <span>AI Document-to-Quiz Showcase</span>
+              <span>Interactive Workflow Preview</span>
             </div>
             <h2 className="text-3xl font-display font-bold tracking-tight text-balance">
-              Inspect every stage of the question generation pipeline.
+              See how lecture readings become ready-to-grade questions.
             </h2>
             <p className="text-sm text-[#D6D0C4] leading-relaxed">
-              Switch tabs to preview how a real uploaded database lecture transforms from extracted prose into a structured MCQ item or a teacher-ready marking rubric.
+              Switch tabs to inspect how an uploaded database systems lecture progresses from source prose into a structured multiple-choice item or a faculty grading rubric.
             </p>
             <div className="flex flex-wrap gap-2 pt-2">
               <button
@@ -499,7 +505,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                     : 'bg-[#303030] text-[#D6D0C4] hover:bg-[#3D3D3D]'
                 }`}
               >
-                01. Extracted Text
+                01. Source Reading
               </button>
               <button
                 type="button"
@@ -510,7 +516,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                     : 'bg-[#303030] text-[#D6D0C4] hover:bg-[#3D3D3D]'
                 }`}
               >
-                02. Generated MCQ
+                02. Multiple Choice
               </button>
               <button
                 type="button"
@@ -521,7 +527,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
                     : 'bg-[#303030] text-[#D6D0C4] hover:bg-[#3D3D3D]'
                 }`}
               >
-                03. Descriptive Rubric
+                03. Grading Rubric
               </button>
             </div>
           </div>
@@ -584,22 +590,22 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
         </div>
       </section>
 
-      {/* Clearly Labeled Sample Testimonials */}
+      {/* Institutional Role Clarity */}
       <section className="max-w-[1280px] mx-auto px-6 py-20">
-        <div className="mb-10">
-          <p className="text-sm font-semibold text-[#66543A] mb-2">Sample User Stories (Illustrative Demo Examples)</p>
-          <h2 className="text-3xl font-display font-bold tracking-tight text-[#252525]">
-            How students and instructors structure their workflows.
+        <div className="max-w-2xl mb-10">
+          <p className="text-sm font-semibold text-[#66543A] mb-2">Role-Based Academic Structure</p>
+          <h2 className="text-3xl font-display font-bold tracking-tight text-[#252525] text-balance">
+            Clear responsibilities for students, faculty, and administrators.
           </h2>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {SAMPLE_TESTIMONIALS.map((t) => (
-            <div key={t.name} className="p-7 rounded-2xl bg-[#F5F1E8] border border-[#E3DED3] space-y-4">
-              <p className="text-sm text-[#252525] leading-relaxed">&ldquo;{t.quote}&rdquo;</p>
-              <div className="pt-3 border-t border-[#E3DED3]">
-                <div className="text-sm font-bold text-[#252525]">{t.name}</div>
-                <div className="text-xs text-[#77736C]">{t.role}</div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {INSTITUTIONAL_ROLES.map((item) => (
+            <div key={item.title} className="p-7 rounded-2xl bg-[#F5F1E8] border border-[#E3DED3] flex flex-col justify-between space-y-4">
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-[#66543A]">{item.subtitle}</div>
+                <h3 className="text-lg font-display font-bold text-[#252525]">{item.title}</h3>
+                <p className="text-sm text-[#252525]/85 leading-relaxed">{item.description}</p>
               </div>
             </div>
           ))}
@@ -611,7 +617,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
         <div className="max-w-[900px] mx-auto px-6">
           <div className="mb-10">
             <p className="text-sm font-semibold text-[#66543A] mb-2">Frequently Asked Questions</p>
-            <h2 className="text-3xl font-display font-bold tracking-tight text-[#252525]">Technical &amp; Academic Clarity</h2>
+            <h2 className="text-3xl font-display font-bold tracking-tight text-[#252525]">Academic &amp; Platform Clarity</h2>
           </div>
 
           <div className="space-y-3">
@@ -650,7 +656,7 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
           <div>
             <BrandMark variant="dark" size="sm" />
             <p className="text-xs text-[#B5B0A6] mt-2">
-              AI Study &amp; Examination Platform · Persistent Cloud &amp; Local Storage
+              ExamAI · Academic Study &amp; Assessment Platform
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-6 text-xs font-medium">
@@ -658,13 +664,13 @@ export function LandingPage({ onNavigate }: LandingPageProps) {
               Practice
             </button>
             <button type="button" onClick={() => onNavigate('/login')} className="hover:text-white transition-colors">
-              Login
+              Sign In
             </button>
             <button type="button" onClick={() => onNavigate('/register')} className="hover:text-white transition-colors">
               Register
             </button>
             <a href="#features" className="hover:text-white transition-colors">
-              Features
+              Capabilities
             </a>
             <a href="#faq" className="hover:text-white transition-colors">
               FAQ

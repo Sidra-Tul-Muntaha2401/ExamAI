@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import type { NextFunction, Request, Response } from 'express';
+import { normalizeTwoRole } from '../src/lib/examRules.ts';
 import type { UserProfile, UserRole } from '../src/types/index.ts';
 import { domainStore } from './domainStore.ts';
 import { store } from './store.ts';
@@ -116,8 +117,7 @@ async function verifySupabaseJwtIfConfigured(token: string): Promise<UserProfile
     if (error || !data?.user?.email) return null;
 
     const meta = (data.user.user_metadata || {}) as Record<string, unknown>;
-    const rawRole = typeof meta.role === 'string' ? meta.role.toLowerCase() : 'student';
-    const requestedRole: UserRole = rawRole === 'teacher' ? 'teacher' : 'student';
+    const requestedRole: UserRole = normalizeTwoRole(meta.role);
     const synced = await domainStore.syncSupabaseUser({
       authUserId: data.user.id,
       email: data.user.email,
@@ -254,15 +254,9 @@ export function requireApprovedTeacher(req: AuthenticatedRequest, res: Response,
     res.status(403).json({ error: 'Access denied. Teacher account required.' });
     return;
   }
-  const approvalStatus = req.user.teacherProfile?.approvalStatus || 'pending';
-  if (approvalStatus !== 'approved') {
+  if (req.user.teacherProfile && req.user.teacherProfile.approvalStatus !== 'approved') {
     res.status(403).json({
-      error:
-        approvalStatus === 'rejected'
-          ? 'Your teacher verification request was rejected. Contact an administrator for details.'
-          : 'Your teacher account is pending administrator verification.',
-      approvalStatus,
-      rejectionReason: req.user.teacherProfile?.rejectionReason || '',
+      error: `Your teacher account is ${req.user.teacherProfile.approvalStatus}. An administrator must approve your account first.`,
     });
     return;
   }
