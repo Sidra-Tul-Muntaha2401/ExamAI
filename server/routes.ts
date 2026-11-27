@@ -241,7 +241,11 @@ export function createApiRouter(): express.Router {
 
   function isDemoLoginEnabled(): boolean {
     if (process.env.DISABLE_DEMO_LOGIN === 'true') return false;
-    return process.env.ENABLE_DEMO_LOGIN === 'true';
+    const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+    if (isProd) {
+      return process.env.ENABLE_DEMO_LOGIN === 'true';
+    }
+    return true;
   }
 
   router.get(
@@ -591,8 +595,54 @@ export function createApiRouter(): express.Router {
         return;
       }
 
-      const row = await store.findUserByEmail(email);
-      if (!row || !row.password_hash || !verifyPassword(password, row.password_hash)) {
+      let row = await store.findUserByEmail(email);
+      let localValid = false;
+      if (row && row.password_hash) {
+        try {
+          localValid = verifyPassword(password, row.password_hash);
+        } catch {
+          localValid = false;
+        }
+      }
+
+      if (!localValid) {
+        // Try Supabase Auth server-side authentication if Supabase config is available
+        const pub = store.getSupabasePublicConfig();
+        if (pub.url && pub.anonKey) {
+          try {
+            const sbAuth = createClient(pub.url, pub.anonKey, {
+              auth: { persistSession: false, autoRefreshToken: false },
+            });
+            const { data: authData, error: authError } = await sbAuth.auth.signInWithPassword({ email, password });
+            if (!authError && authData?.user?.email) {
+              const synced = await domainStore.syncSupabaseUser({
+                authUserId: authData.user.id,
+                email: authData.user.email,
+                fullName: String(authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || email.split('@')[0]),
+                requestedRole: 'student',
+              });
+              if (!('error' in synced)) {
+                row = await store.findUserByEmail(email);
+              }
+            } else if (authError?.message?.toLowerCase().includes('email not confirmed')) {
+              res.status(403).json({ error: 'Please confirm your email address before signing in.' });
+              return;
+            }
+          } catch {
+            // Ignore temporary Supabase auth connection errors and fall through to invalid credentials
+          }
+        }
+      }
+
+      // Re-check local row after potential Supabase sync
+      if (!row || (!row.password_hash && (!row.auth_user_id)) || (row.password_hash && !verifyPassword(password, row.password_hash) && !row.auth_user_id)) {
+        res.locals.logDetails = 'Failed login attempt';
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
+      }
+
+      // If user has auth_user_id or password_hash validated, verify active status
+      if (row.password_hash && row.password_hash.length > 0 && !verifyPassword(password, row.password_hash) && !row.auth_user_id) {
         res.locals.logDetails = 'Failed login attempt';
         res.status(401).json({ error: 'Invalid email or password.' });
         return;
