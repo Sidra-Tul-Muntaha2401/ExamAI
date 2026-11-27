@@ -15,7 +15,8 @@ function getSessionSecret(): string {
     return process.env.SESSION_SECRET.trim();
   }
   if (!cachedFallbackSecret) {
-    cachedFallbackSecret = crypto.randomBytes(32).toString('hex');
+    const seed = (process.env.SUPABASE_URL || '') + (process.env.SUPABASE_ANON_KEY || '') + (process.env.DATABASE_PATH || 'exampilot_fallback_seed_key');
+    cachedFallbackSecret = crypto.createHash('sha256').update(seed).digest('hex');
   }
   return cachedFallbackSecret;
 }
