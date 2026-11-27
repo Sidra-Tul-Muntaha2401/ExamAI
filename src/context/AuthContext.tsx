@@ -445,17 +445,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             email: cleanEmail,
             password,
           });
-          if (!error && data.session && data.user) {
-            const syncedUser = await syncSupabaseSession(sb, cfg, data.session);
-            void refreshAdminBootstrap();
-            return syncedUser;
-          }
           if (error) {
-            const errLower = error.message.toLowerCase();
-            if (errLower.includes('email not confirmed')) {
-              throw new Error(formatSupabaseAuthError(error, 'login'));
-            }
+            throw new Error(formatSupabaseAuthError(error, 'login'));
           }
+          if (!data.session || !data.user) {
+            throw new Error('Unable to establish an authenticated Supabase session.');
+          }
+          const syncedUser = await syncSupabaseSession(sb, cfg, data.session);
+          void refreshAdminBootstrap();
+          return syncedUser;
         }
 
         const res = await api.post<{ user: UserProfile; token: string }>('/api/auth/login', {

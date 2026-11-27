@@ -479,6 +479,9 @@ export class DomainStore {
     const existingByEmail = await store.findUserByEmail(cleanEmail);
 
     if (existingByEmail) {
+      if (existingByEmail.auth_user_id && existingByEmail.auth_user_id !== input.authUserId) {
+        return { error: 'Account is linked to a different authentication identity.', status: 409 };
+      }
       if (!existingByEmail.auth_user_id) {
         const now = new Date().toISOString();
         if (store.provider === 'supabase') {
